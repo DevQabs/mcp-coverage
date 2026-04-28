@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// annotRaw holds a parsed annotation's name, raw content, and its end position.
+// annotRaw holds a parsed annotation's name, raw content, and end position.
 type annotRaw struct {
 	name    string
 	content string // text between the parens, empty if no parens present
@@ -13,8 +13,7 @@ type annotRaw struct {
 	endPos  int // position in source after this annotation (including closing paren)
 }
 
-// httpMethodForAnnotation returns the fixed HTTP method for shorthand mapping
-// annotations, or "" for @RequestMapping (method extracted from content).
+// httpMethodForAnnotation maps shorthand mapping annotations to their fixed HTTP method.
 var httpMethodForAnnotation = map[string]string{
 	"GetMapping":    "GET",
 	"PostMapping":   "POST",
@@ -36,17 +35,14 @@ func parseAnnotation(src string, pos int) (*annotRaw, int) {
 	}
 	pos++ // skip '@'
 
-	// Read annotation name (may contain dots for fully-qualified, we only care about simple name)
 	start := pos
 	for pos < len(src) && (src[pos] == '_' || src[pos] == '.' || isLetter(src[pos]) || isDigit(src[pos])) {
 		pos++
 	}
 	fullName := src[start:pos]
-	// Use simple name (after last dot)
 	parts := strings.Split(fullName, ".")
 	name := parts[len(parts)-1]
 
-	// Skip horizontal whitespace only (preserve newlines for line counting)
 	for pos < len(src) && (src[pos] == ' ' || src[pos] == '\t') {
 		pos++
 	}
@@ -60,13 +56,12 @@ func parseAnnotation(src string, pos int) (*annotRaw, int) {
 }
 
 // extractBalancedParens extracts the content inside matching parentheses.
-// pos must point at the opening '('. Returns the inner content and the
-// position after the closing ')'.
+// pos must point at '('. Returns inner content and position after ')'.
 func extractBalancedParens(src string, pos int) (string, int) {
 	if pos >= len(src) || src[pos] != '(' {
 		return "", pos
 	}
-	pos++ // skip '('
+	pos++
 	start := pos
 	depth := 1
 	for pos < len(src) && depth > 0 {
@@ -76,10 +71,10 @@ func extractBalancedParens(src string, pos int) (string, int) {
 		case ')':
 			depth--
 		case '"':
-			pos++ // skip opening quote
+			pos++
 			for pos < len(src) {
 				if src[pos] == '\\' {
-					pos++ // skip escape char
+					pos++
 				} else if src[pos] == '"' {
 					break
 				}
@@ -92,36 +87,182 @@ func extractBalancedParens(src string, pos int) (string, int) {
 	}
 	content := src[start:pos]
 	if pos < len(src) {
-		pos++ // skip ')'
+		pos++
 	}
 	return content, pos
 }
 
-// extractPaths parses the annotation content and returns all path string literals.
+// ── path extraction ────────────────────────────────────────────────────────
+
+// extractPaths parses annotation content and returns all path string literals.
 // Handles:
 //
-//	@GetMapping("/path")           → ["/path"]
-//	@GetMapping(value="/path")     → ["/path"]
-//	@GetMapping({"/a","/b"})       → ["/a","/b"]
-//	@GetMapping(value={"/a","/b"}) → ["/a","/b"]
-//	@GetMapping                    → []  (no content)
+//	@GetMapping("/path")                           → ["/path"]
+//	@GetMapping(value="/path")                     → ["/path"]
+//	@GetMapping(path="/path")                      → ["/path"]
+//	@GetMapping({"/a","/b"})                       → ["/a","/b"]
+//	@GetMapping(value={"/a","/b"})                 → ["/a","/b"]
+//	@GetMapping(value="/a", produces="text/plain") → ["/a"] only
+//
+// Returns nil when content is empty or contains no string literals
+// (e.g. constant reference — caller should use resolvePathsOrMark instead).
 func extractPaths(content string) []string {
 	if content == "" {
 		return nil
 	}
-	var paths []string
-	inStr := false
-	var cur strings.Builder
+	if hasTopLevelEquals(content) {
+		// Named attributes — extract value= or path= only, ignore produces/consumes/etc.
+		if paths := extractNamedAttrStrings(content, "value"); len(paths) > 0 {
+			return paths
+		}
+		return extractNamedAttrStrings(content, "path")
+	}
+	// Purely positional — all string literals are paths.
+	return extractAllStrings(content)
+}
 
+// hasTopLevelEquals reports whether content contains '=' outside strings/braces.
+func hasTopLevelEquals(content string) bool {
+	inStr, depth := false, 0
 	for i := 0; i < len(content); i++ {
 		ch := content[i]
 		if inStr {
-			if ch == '\\' && i+1 < len(content) {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inStr = true
+		case '(', '{', '[':
+			depth++
+		case ')', '}', ']':
+			depth--
+		case '=':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractNamedAttrStrings finds `attr = <value>` in content and extracts string
+// literals from just the value token (not subsequent attributes).
+func extractNamedAttrStrings(content, attr string) []string {
+	// Find attr= (with optional whitespace before =) outside strings.
+	found := -1
+	inStr := false
+	for i := 0; i <= len(content)-len(attr); i++ {
+		ch := content[i]
+		if inStr {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inStr = true
+			continue
+		}
+		if content[i:i+len(attr)] == attr {
+			j := i + len(attr)
+			for j < len(content) && (content[j] == ' ' || content[j] == '\t') {
+				j++
+			}
+			if j < len(content) && content[j] == '=' {
+				found = j + 1
+				break
+			}
+		}
+	}
+	if found < 0 {
+		return nil
+	}
+	rest := strings.TrimSpace(content[found:])
+	token := extractValueToken(rest)
+	return extractAllStrings(token)
+}
+
+// extractValueToken returns just the first value token from s:
+// a quoted string "...", an array {...}, or a bare token (identifier/constant).
+// Stops at the next comma or ')' at depth 0.
+func extractValueToken(s string) string {
+	if s == "" {
+		return ""
+	}
+	switch s[0] {
+	case '"':
+		for i := 1; i < len(s); i++ {
+			if s[i] == '\\' {
+				i++
+				continue
+			}
+			if s[i] == '"' {
+				return s[:i+1]
+			}
+		}
+		return s
+	case '{':
+		depth, inStr := 0, false
+		for i := 0; i < len(s); i++ {
+			ch := s[i]
+			if inStr {
+				if ch == '\\' {
+					i++
+					continue
+				}
+				if ch == '"' {
+					inStr = false
+				}
+				continue
+			}
+			switch ch {
+			case '"':
+				inStr = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					return s[:i+1]
+				}
+			}
+		}
+		return s
+	default:
+		for i := 0; i < len(s); i++ {
+			if s[i] == ',' || s[i] == ')' {
+				return s[:i]
+			}
+		}
+		return s
+	}
+}
+
+// extractAllStrings extracts all double-quoted string values from s.
+func extractAllStrings(s string) []string {
+	var result []string
+	inStr := false
+	var cur strings.Builder
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inStr {
+			if ch == '\\' && i+1 < len(s) {
 				cur.WriteByte(ch)
 				i++
-				cur.WriteByte(content[i])
+				cur.WriteByte(s[i])
 			} else if ch == '"' {
-				paths = append(paths, cur.String())
+				result = append(result, cur.String())
 				cur.Reset()
 				inStr = false
 			} else {
@@ -131,25 +272,47 @@ func extractPaths(content string) []string {
 			inStr = true
 		}
 	}
-	return paths
+	return result
 }
 
-var requestMethodRe = regexp.MustCompile(`(?i)method\s*=\s*(?:\{\s*)?(?:RequestMethod\.)?(\w+)`)
+// ── HTTP method extraction ─────────────────────────────────────────────────
 
-// extractHTTPMethod extracts method=RequestMethod.GET from @RequestMapping content.
-// Defaults to GET if not specified.
-func extractHTTPMethod(content string) string {
-	m := requestMethodRe.FindStringSubmatch(content)
-	if len(m) < 2 {
-		return "GET"
+// requestMethodsRe matches method= with a single value or {}-delimited list.
+var requestMethodsRe = regexp.MustCompile(
+	`\bmethod\s*=\s*(?:\{([^}]*)\}|([A-Za-z][A-Za-z0-9._]*))`)
+
+// extractHTTPMethods returns the HTTP methods declared in @RequestMapping content.
+// Handles:
+//
+//	method = RequestMethod.GET              → ["GET"]
+//	method = {RequestMethod.GET, RequestMethod.POST} → ["GET","POST"]
+//
+// Defaults to ["GET"] when no method= attribute is present.
+func extractHTTPMethods(content string) []string {
+	m := requestMethodsRe.FindStringSubmatch(content)
+	if m == nil {
+		return []string{"GET"}
 	}
-	method := strings.ToUpper(m[1])
-	// Validate it's a real HTTP method
-	switch method {
-	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
-		return method
+	raw := m[1]
+	if raw == "" {
+		raw = m[2]
 	}
-	return "GET"
+	var methods []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if idx := strings.LastIndex(part, "."); idx >= 0 {
+			part = part[idx+1:]
+		}
+		part = strings.ToUpper(strings.TrimSpace(part))
+		switch part {
+		case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+			methods = append(methods, part)
+		}
+	}
+	if len(methods) == 0 {
+		return []string{"GET"}
+	}
+	return methods
 }
 
 // ── character helpers ──────────────────────────────────────────────────────

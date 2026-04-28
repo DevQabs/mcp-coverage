@@ -105,6 +105,7 @@ func newScanner(cfg *config.Config) apiscanner.Scanner {
 			ProjectPath:               cfg.TargetProjectPath,
 			ExcludeAPIPatterns:        cfg.ExcludeAPIPatterns,
 			ExcludeControllerPatterns: cfg.ExcludeControllerPatterns,
+			ActuatorURL:               cfg.ActuatorURL,
 			Debug:                     cfg.Debug,
 		})
 	}

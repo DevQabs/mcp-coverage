@@ -10,6 +10,10 @@ import (
 	"mcp-coverage/internal/apiscanner/javasource"
 )
 
+// Ensure exported types compile — these are used in tests below.
+var _ javasource.ConstantRegistry
+var _ = javasource.ParseFileWithRegistry
+
 // ── parser unit tests ──────────────────────────────────────────────────────
 
 func TestGetMapping(t *testing.T) {
@@ -542,6 +546,379 @@ public class Ctrl {
 	scanner := javasource.New(javasource.Config{ProjectPath: dir, Debug: true})
 	_, err := scanner.Scan()
 	must(t, err)
+}
+
+// ── new feature tests ─────────────────────────────────────────────────────
+
+func TestMultipleHTTPMethodsOnRequestMapping(t *testing.T) {
+	src := `
+@RestController
+public class UserController {
+    @RequestMapping(value = "/users", method = {RequestMethod.GET, RequestMethod.POST})
+    public Object users() { return null; }
+}`
+	ctrl := javasource.ParseFile("UserController.java", src)
+	assertNotNil(t, ctrl)
+	// Should produce two MethodDef entries: GET and POST
+	if len(ctrl.Methods) != 2 {
+		t.Fatalf("expected 2 methods (GET+POST expansion), got %d", len(ctrl.Methods))
+	}
+	methods := httpMethods(ctrl)
+	assertContains(t, methods, "GET")
+	assertContains(t, methods, "POST")
+	for _, m := range ctrl.Methods {
+		paths := combinePaths(ctrl.BasePaths, m.Paths)
+		assertContains(t, paths, "/users")
+	}
+}
+
+func TestValueAttributeExtraction(t *testing.T) {
+	src := `
+@RestController
+@RequestMapping(value = "/api")
+public class PatientController {
+    @GetMapping(value = "/patients")
+    public List<Patient> list() { return null; }
+}`
+	ctrl := javasource.ParseFile("PatientController.java", src)
+	assertNotNil(t, ctrl)
+	paths := allPaths(ctrl)
+	assertContains(t, paths, "/api/patients")
+}
+
+func TestPathAttributeExtraction(t *testing.T) {
+	src := `
+@RestController
+@RequestMapping(path = "/api")
+public class PatientController {
+    @GetMapping(path = "/patients")
+    public List<Patient> list() { return null; }
+}`
+	ctrl := javasource.ParseFile("PatientController.java", src)
+	assertNotNil(t, ctrl)
+	paths := allPaths(ctrl)
+	assertContains(t, paths, "/api/patients")
+}
+
+func TestProducesDoesNotPollutePaths(t *testing.T) {
+	// @GetMapping(value="/patients", produces="application/json") must NOT
+	// generate a second entry for "application/json".
+	src := `
+@RestController
+public class PatientController {
+    @GetMapping(value = "/patients", produces = "application/json")
+    public List<Patient> list() { return null; }
+}`
+	ctrl := javasource.ParseFile("PatientController.java", src)
+	assertNotNil(t, ctrl)
+	assertEqual(t, 1, len(ctrl.Methods))
+	paths := combinePaths(ctrl.BasePaths, ctrl.Methods[0].Paths)
+	assertEqual(t, 1, len(paths))
+	assertContains(t, paths, "/patients")
+}
+
+func TestConstantPathUnresolvedButNotDropped(t *testing.T) {
+	// When path is a constant reference that cannot be resolved, the API must
+	// still appear in the output with an UNRESOLVED: prefix — never dropped.
+	src := `
+@RestController
+@RequestMapping(ApiPaths.PATIENT_BASE)
+public class PatientController {
+    @GetMapping(PatientApi.SEARCH)
+    public List<Patient> search() { return null; }
+}`
+	ctrl := javasource.ParseFile("PatientController.java", src)
+	assertNotNil(t, ctrl)
+	// Base path is unresolved
+	if !ctrl.BasePathUnresolved {
+		t.Error("expected BasePathUnresolved=true for constant base path")
+	}
+	// Method path is also unresolved
+	if len(ctrl.Methods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(ctrl.Methods))
+	}
+	if !ctrl.Methods[0].Unresolved {
+		t.Error("expected method Unresolved=true for constant method path")
+	}
+	// Both paths contain UNRESOLVED: prefix
+	for _, p := range ctrl.BasePaths {
+		if !strings.HasPrefix(p, "UNRESOLVED:") {
+			t.Errorf("base path %q missing UNRESOLVED: prefix", p)
+		}
+	}
+	for _, p := range ctrl.Methods[0].Paths {
+		if !strings.HasPrefix(p, "UNRESOLVED:") {
+			t.Errorf("method path %q missing UNRESOLVED: prefix", p)
+		}
+	}
+}
+
+func TestConstantPathResolvedViaRegistry(t *testing.T) {
+	// When the constant can be found in the registry, the resolved value is used.
+	src := `
+@RestController
+public class PatientController {
+    @GetMapping(PatientPaths.PATIENT_LIST)
+    public List<Patient> list() { return null; }
+}`
+	reg := javasource.ConstantRegistry{
+		"PatientPaths.PATIENT_LIST": "/api/patients",
+		"PATIENT_LIST":              "/api/patients",
+	}
+	ctrl := javasource.ParseFileWithRegistry("PatientController.java", src, reg)
+	assertNotNil(t, ctrl)
+	if len(ctrl.Methods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(ctrl.Methods))
+	}
+	if ctrl.Methods[0].Unresolved {
+		t.Error("expected method Unresolved=false when constant is in registry")
+	}
+	assertContains(t, ctrl.Methods[0].Paths, "/api/patients")
+}
+
+func TestScannerUnresolvedPathsIncludedInCount(t *testing.T) {
+	// APIs with constant paths must be included in scan results (ScanStatus=partial)
+	// and not silently dropped.
+	dir := t.TempDir()
+	ctrlDir := filepath.Join(dir, "src", "main", "java", "com", "example")
+	must(t, os.MkdirAll(ctrlDir, 0o755))
+
+	writeJava(t, filepath.Join(ctrlDir, "PatientController.java"), `
+@RestController
+public class PatientController {
+    @GetMapping(ApiPaths.SEARCH)
+    public List<Patient> search() { return null; }
+
+    @PostMapping("/patients")
+    public Patient create() { return null; }
+}`)
+
+	scanner := javasource.New(javasource.Config{ProjectPath: dir})
+	entries, err := scanner.Scan()
+	must(t, err)
+
+	// 2 entries: one unresolved, one normal
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (1 unresolved + 1 normal), got %d: %v", len(entries), entryKeys(entries))
+	}
+
+	partial := 0
+	for _, e := range entries {
+		if e.ScanStatus == "partial" {
+			partial++
+		}
+	}
+	if partial != 1 {
+		t.Errorf("expected 1 partial entry, got %d", partial)
+	}
+}
+
+func TestInterfaceControllerDetected(t *testing.T) {
+	// Interface with @RequestMapping on class level and @GetMapping on method
+	// should be detected and produce API entries.
+	src := `
+@RequestMapping("/api")
+public interface PatientApi {
+    @GetMapping("/patients")
+    List<Patient> listPatients();
+
+    @PostMapping("/patients")
+    Patient createPatient();
+}`
+	ctrl := javasource.ParseFile("PatientApi.java", src)
+	assertNotNil(t, ctrl)
+	if !ctrl.IsInterface {
+		t.Error("expected IsInterface=true")
+	}
+	assertEqual(t, 2, len(ctrl.Methods))
+	paths := allPaths(ctrl)
+	assertContains(t, paths, "/api/patients")
+
+	methods := httpMethods(ctrl)
+	assertContains(t, methods, "GET")
+	assertContains(t, methods, "POST")
+}
+
+func TestAbstractControllerMethodsDetected(t *testing.T) {
+	// Abstract class with @RestController should detect abstract method mappings.
+	src := `
+@RestController
+@RequestMapping("/base")
+public abstract class BaseController {
+    @GetMapping("/items")
+    public abstract List<Object> listItems();
+
+    @PostMapping("/items")
+    public abstract Object createItem();
+}`
+	ctrl := javasource.ParseFile("BaseController.java", src)
+	assertNotNil(t, ctrl)
+	if !ctrl.IsAbstract {
+		t.Error("expected IsAbstract=true")
+	}
+	assertEqual(t, 2, len(ctrl.Methods))
+	paths := allPaths(ctrl)
+	assertContains(t, paths, "/base/items")
+}
+
+func TestFullyQualifiedAnnotationName(t *testing.T) {
+	// Fully qualified annotation names like org.springframework.web.bind.annotation.GetMapping
+	// should be resolved to their simple names and detected correctly.
+	src := `
+@org.springframework.web.bind.annotation.RestController
+@org.springframework.web.bind.annotation.RequestMapping("/api")
+public class PatientController {
+    @org.springframework.web.bind.annotation.GetMapping("/patients")
+    public List<Patient> list() { return null; }
+}`
+	ctrl := javasource.ParseFile("PatientController.java", src)
+	assertNotNil(t, ctrl)
+	assertEqual(t, "GET", ctrl.Methods[0].HTTPMethod)
+	paths := allPaths(ctrl)
+	assertContains(t, paths, "/api/patients")
+}
+
+func TestBuildConstantRegistry(t *testing.T) {
+	dir := t.TempDir()
+	writeJava(t, filepath.Join(dir, "ApiPaths.java"), `
+public class ApiPaths {
+    public static final String PATIENT_BASE = "/api/patients";
+    public static final String LAB_BASE = "/api/lab";
+}`)
+
+	reg := javasource.BuildConstantRegistry(dir)
+	if v, ok := reg["PATIENT_BASE"]; !ok || v != "/api/patients" {
+		t.Errorf("expected PATIENT_BASE=/api/patients, got %q (ok=%v)", v, ok)
+	}
+	if v, ok := reg["ApiPaths.PATIENT_BASE"]; !ok || v != "/api/patients" {
+		t.Errorf("expected ApiPaths.PATIENT_BASE=/api/patients, got %q (ok=%v)", v, ok)
+	}
+	if v, ok := reg["ApiPaths.LAB_BASE"]; !ok || v != "/api/lab" {
+		t.Errorf("expected ApiPaths.LAB_BASE=/api/lab, got %q (ok=%v)", v, ok)
+	}
+}
+
+func TestScannerUsesConstantRegistry(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src", "main", "java", "com", "example")
+	must(t, os.MkdirAll(srcDir, 0o755))
+
+	// Constants file
+	writeJava(t, filepath.Join(srcDir, "ApiPaths.java"), `
+public class ApiPaths {
+    public static final String PATIENT_BASE = "/api/patients";
+}`)
+
+	// Controller using constant
+	writeJava(t, filepath.Join(srcDir, "PatientController.java"), `
+@RestController
+@RequestMapping(ApiPaths.PATIENT_BASE)
+public class PatientController {
+    @GetMapping("/{id}")
+    public Patient get(@PathVariable Long id) { return null; }
+
+    @PostMapping
+    public Patient create() { return null; }
+}`)
+
+	scanner := javasource.New(javasource.Config{ProjectPath: dir})
+	entries, err := scanner.Scan()
+	must(t, err)
+
+	// With registry, base path constant should resolve to /api/patients
+	// → GET /api/patients/{id} and POST /api/patients
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries after constant resolution, got %d: %v", len(entries), entryKeys(entries))
+	}
+	assertEntryExists(t, entries, "GET", "/api/patients/{id}")
+	assertEntryExists(t, entries, "POST", "/api/patients")
+	for _, e := range entries {
+		if e.ScanStatus == "partial" {
+			t.Errorf("entry %s %s should be fully resolved, got ScanStatus=%q", e.HTTPMethod, e.APIPath, e.ScanStatus)
+		}
+	}
+}
+
+func TestEmptyMethodLevelPath(t *testing.T) {
+	// @PostMapping with no path means the method maps to the class-level base path.
+	src := `
+@RestController
+@RequestMapping("/api/patients")
+public class PatientController {
+    @PostMapping
+    public Patient create() { return null; }
+}`
+	ctrl := javasource.ParseFile("PatientController.java", src)
+	assertNotNil(t, ctrl)
+	paths := combinePaths(ctrl.BasePaths, ctrl.Methods[0].Paths)
+	assertContains(t, paths, "/api/patients")
+}
+
+func TestMultiplePathsOnSingleMethod(t *testing.T) {
+	src := `
+@RestController
+@RequestMapping("/api")
+public class InvoiceController {
+    @GetMapping({"/invoices", "/bills", "/receipts"})
+    public List<Invoice> list() { return null; }
+}`
+	ctrl := javasource.ParseFile("InvoiceController.java", src)
+	assertNotNil(t, ctrl)
+	paths := combinePaths(ctrl.BasePaths, ctrl.Methods[0].Paths)
+	assertEqual(t, 3, len(paths))
+	assertContains(t, paths, "/api/invoices")
+	assertContains(t, paths, "/api/bills")
+	assertContains(t, paths, "/api/receipts")
+}
+
+func TestInheritedBaseControllerInScanResults(t *testing.T) {
+	// A base abstract controller and its concrete implementation both in the
+	// same project. The abstract class defines the API shape; the implementation
+	// shouldn't create duplicates if it redeclares nothing.
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src", "main", "java", "com", "example")
+	must(t, os.MkdirAll(srcDir, 0o755))
+
+	writeJava(t, filepath.Join(srcDir, "BasePatientController.java"), `
+@RestController
+@RequestMapping("/api/patients")
+public abstract class BasePatientController {
+    @GetMapping
+    public abstract List<Patient> list();
+
+    @PostMapping
+    public abstract Patient create();
+}`)
+
+	writeJava(t, filepath.Join(srcDir, "PatientControllerImpl.java"), `
+@RestController
+public class PatientControllerImpl extends BasePatientController {
+    @Override
+    public List<Patient> list() { return null; }
+
+    @Override
+    public Patient create() { return null; }
+}`)
+
+	scanner := javasource.New(javasource.Config{ProjectPath: dir})
+	entries, err := scanner.Scan()
+	must(t, err)
+
+	// The abstract class defines 2 API routes; the impl has none (no mapping annotations).
+	// Total should be 2 (or 4 if impl also redeclares — but here it doesn't).
+	if len(entries) == 0 {
+		t.Error("expected at least 2 API entries from abstract base controller")
+	}
+	// At least the base controller APIs are present.
+	found := 0
+	for _, e := range entries {
+		if (e.HTTPMethod == "GET" || e.HTTPMethod == "POST") && e.APIPath == "/api/patients" {
+			found++
+		}
+	}
+	if found < 2 {
+		t.Errorf("expected GET+POST /api/patients from base controller, found %d matches in %v", found, entryKeys(entries))
+	}
 }
 
 // ── exclusion unit tests ───────────────────────────────────────────────────

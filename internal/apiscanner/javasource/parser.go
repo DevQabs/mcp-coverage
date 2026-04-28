@@ -7,63 +7,83 @@ import (
 
 // ControllerDef holds all extracted information from one Spring controller file.
 type ControllerDef struct {
-	ClassName  string
-	BasePaths  []string // from class-level @RequestMapping
-	Methods    []MethodDef
-	SourceFile string
+	ClassName          string
+	BasePaths          []string // from class-level @RequestMapping (may contain UNRESOLVED: prefix)
+	BasePathUnresolved bool     // true when base path is a constant that could not be resolved
+	BasePathRef        string   // the unresolved constant reference string
+	Methods            []MethodDef
+	SourceFile         string
+	IsInterface        bool // true when parsed from an interface (not @RestController)
+	IsAbstract         bool // true for abstract class controllers
 }
 
 // MethodDef is one handler method with its resolved HTTP method and relative paths.
 type MethodDef struct {
-	MethodName string
-	HTTPMethod string
-	Paths      []string // relative paths declared on the annotation
-	LineNumber int
+	MethodName    string
+	HTTPMethod    string
+	Paths         []string // relative paths (may contain UNRESOLVED: prefix)
+	LineNumber    int
+	Unresolved    bool   // true when path is a constant that could not be resolved
+	UnresolvedRef string // the unresolved constant reference
 }
 
 var (
-	// controllerAnnotRe matches @RestController or @Controller (word boundary prevents
-	// matching @ControllerAdvice or @RestControllerAdvice).
-	controllerAnnotRe = regexp.MustCompile(`@(?:Rest)?Controller\b`)
-	// adviceAnnotRe detects advice classes that should NOT be treated as controllers.
-	adviceAnnotRe = regexp.MustCompile(`@(?:Rest)?ControllerAdvice\b`)
-	// classRe finds the class declaration and captures the class name.
-	classRe = regexp.MustCompile(`(?:public\s+|protected\s+|abstract\s+|final\s+)*class\s+(\w+)`)
+	// controllerAnnotRe matches @RestController or @Controller, including fully
+	// qualified forms (e.g. @org.springframework.web.bind.annotation.RestController).
+	// The (?:\w+\.)* prefix allows any package path before the simple name.
+	controllerAnnotRe = regexp.MustCompile(`@(?:\w+\.)*(?:Rest)?Controller\b`)
+	// adviceAnnotRe detects advice classes that must NOT be treated as controllers.
+	adviceAnnotRe = regexp.MustCompile(`@(?:\w+\.)*(?:Rest)?ControllerAdvice\b`)
+	// classRe finds class or interface declarations and captures the name.
+	classRe = regexp.MustCompile(`(?:public\s+|protected\s+|abstract\s+|final\s+)*(?:class|interface)\s+(\w+)`)
 	// methodNameRe finds the last non-keyword identifier before '(' in a method signature.
 	methodNameRe = regexp.MustCompile(`(\w+)\s*\(`)
+	// interfaceWithMappingRe detects interfaces that declare Spring MVC mapping annotations.
+	interfaceWithMappingRe = regexp.MustCompile(`\binterface\s+\w+`)
+	// anyMappingAnnotRe matches any Spring MVC mapping annotation (incl. fully qualified).
+	anyMappingAnnotRe = regexp.MustCompile(`@(?:\w+\.)*(?:Request|Get|Post|Put|Delete|Patch)Mapping\b`)
 )
 
-// ParseFile parses a single Java source file and returns a ControllerDef if the
-// file is a Spring MVC controller. Returns nil if the file is not a controller.
+// ParseFile parses a single Java source file. Returns nil if not a controller.
+// Backward-compatible wrapper — uses no constant registry.
 func ParseFile(path, src string) *ControllerDef {
+	return ParseFileWithRegistry(path, src, nil)
+}
+
+// ParseFileWithRegistry parses a Java source file using reg to resolve path constants.
+// reg may be nil (disables constant resolution; unresolvable paths are still included
+// with an UNRESOLVED: prefix rather than being silently dropped).
+func ParseFileWithRegistry(path, src string, reg ConstantRegistry) *ControllerDef {
 	clean := stripComments(src)
 
 	if !isController(clean) {
 		return nil
 	}
 
-	className, classPos := findClassDeclaration(clean)
+	className, classPos, isIface, isAbstract := findClassDeclaration(clean)
 	if classPos < 0 {
 		return nil
 	}
 
-	basePaths := extractBasePaths(clean[:classPos])
+	basePaths, baseUnresolved, baseRef := extractBasePaths(clean[:classPos], reg)
 
-	// Find the opening '{' of the class body.
 	bodyStart := strings.Index(clean[classPos:], "{")
 	if bodyStart < 0 {
 		return nil
 	}
-	bodyStart += classPos + 1 // position just after '{'
+	bodyStart += classPos + 1
 
-	methods, lineOffset := extractMethods(clean, bodyStart, countLines(clean[:bodyStart]))
+	methods, _ := extractMethods(clean, bodyStart, countLines(clean[:bodyStart]), reg)
 
-	_ = lineOffset
 	return &ControllerDef{
-		ClassName:  className,
-		BasePaths:  basePaths,
-		Methods:    methods,
-		SourceFile: path,
+		ClassName:          className,
+		BasePaths:          basePaths,
+		BasePathUnresolved: baseUnresolved,
+		BasePathRef:        baseRef,
+		Methods:            methods,
+		SourceFile:         path,
+		IsInterface:        isIface,
+		IsAbstract:         isAbstract,
 	}
 }
 
@@ -73,43 +93,63 @@ func isController(src string) bool {
 	if adviceAnnotRe.MatchString(src) {
 		return false
 	}
-	return controllerAnnotRe.MatchString(src)
+	if controllerAnnotRe.MatchString(src) {
+		return true
+	}
+	// Interfaces (and abstract types) that carry Spring MVC mapping annotations
+	// are treated as controller blueprints — they define real API routes even
+	// without @RestController.
+	if interfaceWithMappingRe.MatchString(src) && anyMappingAnnotRe.MatchString(src) {
+		return true
+	}
+	return false
 }
 
-// ── class declaration ──────────────────────────────────────────────────────
+// ── class/interface declaration ────────────────────────────────────────────
 
-func findClassDeclaration(src string) (name string, pos int) {
+func findClassDeclaration(src string) (name string, pos int, isInterface bool, isAbstract bool) {
 	m := classRe.FindStringIndex(src)
 	if m == nil {
-		return "", -1
+		return "", -1, false, false
 	}
 	sub := classRe.FindStringSubmatch(src[m[0]:])
 	if len(sub) < 2 {
-		return "", -1
+		return "", -1, false, false
 	}
-	return sub[1], m[0]
+	ctx := src[m[0] : m[0]+len(sub[0])]
+	isInterface = strings.Contains(ctx, "interface")
+	isAbstract = strings.Contains(ctx, "abstract")
+	return sub[1], m[0], isInterface, isAbstract
 }
 
 // ── class-level @RequestMapping ────────────────────────────────────────────
 
-func extractBasePaths(preClass string) []string {
-	idx := strings.LastIndex(preClass, "@RequestMapping")
-	if idx < 0 {
-		return nil
+func extractBasePaths(preClass string, reg ConstantRegistry) ([]string, bool, string) {
+	// Scan all annotations in preClass and use the last @RequestMapping found.
+	// This handles both simple (@RequestMapping) and fully qualified
+	// (@org.springframework.web.bind.annotation.RequestMapping) forms.
+	var last *annotRaw
+	pos := 0
+	for pos < len(preClass) {
+		idx := strings.Index(preClass[pos:], "@")
+		if idx < 0 {
+			break
+		}
+		abs := pos + idx
+		a, newPos := parseAnnotation(preClass, abs)
+		if a != nil && a.name == "RequestMapping" {
+			last = a
+		}
+		if newPos > abs {
+			pos = newPos
+		} else {
+			pos = abs + 1
+		}
 	}
-	a, _ := parseAnnotation(preClass, idx)
-	if a == nil {
-		return nil
+	if last == nil {
+		return nil, false, ""
 	}
-	paths := extractPaths(a.content)
-	if len(paths) == 0 && a.content == "" {
-		return nil
-	}
-	if len(paths) == 0 {
-		// content present but no string literal — might be just whitespace/empty parens
-		return nil
-	}
-	return paths
+	return resolvePathsOrMark(last.content, reg)
 }
 
 // ── method-level annotations ───────────────────────────────────────────────
@@ -119,13 +159,13 @@ type pendingAnnot struct {
 	lineNum int
 }
 
-// extractMethods scans the class body (starting at bodyStart, which is the
-// position right after the class's opening '{') and collects all handler methods.
-func extractMethods(src string, bodyStart int, classLineOffset int) ([]MethodDef, int) {
+// extractMethods scans the class body starting at bodyStart (right after the opening '{')
+// and collects all handler methods, including abstract and interface methods (terminated by ';').
+func extractMethods(src string, bodyStart int, classLineOffset int, reg ConstantRegistry) ([]MethodDef, int) {
 	var methods []MethodDef
 
 	pos := bodyStart
-	braceDepth := 1 // we are inside the class body (depth 1)
+	braceDepth := 1
 	var pending []pendingAnnot
 	lineNum := classLineOffset
 
@@ -137,22 +177,18 @@ func extractMethods(src string, bodyStart int, classLineOffset int) ([]MethodDef
 		case ch == '{':
 			braceDepth++
 			if braceDepth == 2 && len(pending) > 0 {
-				// Entering a method body. Find method name in the text between
-				// the last annotation end and this brace.
 				lastAnnotEnd := pending[len(pending)-1].annot.endPos
 				sig := src[lastAnnotEnd:pos]
 				name := findMethodName(sig)
 				if name != "" {
 					firstAnnotLine := pending[0].lineNum
-					m := buildMethodDefs(pending, name, firstAnnotLine)
+					m := buildMethodDefs(pending, name, firstAnnotLine, reg)
 					methods = append(methods, m...)
 				}
 				pending = nil
 			} else if braceDepth == 2 {
-				// Inner class, enum, or block without preceding mapping annotation.
 				pending = nil
 			}
-			// Skip the entire method/inner-class body by jumping to its matching '}'.
 			if braceDepth > 1 {
 				pos = skipBody(src, pos+1, braceDepth-1)
 				braceDepth = 1
@@ -172,21 +208,33 @@ func extractMethods(src string, bodyStart int, classLineOffset int) ([]MethodDef
 		case ch == '@' && braceDepth == 1:
 			a, newPos := parseAnnotation(src, pos)
 			if a != nil && isMappingName[a.name] {
-				pending = append(pending, pendingAnnot{annot: a, lineNum: lineNum + countLines(src[bodyStart:pos])})
+				pending = append(pending, pendingAnnot{
+					annot:   a,
+					lineNum: lineNum + countLines(src[bodyStart:pos]),
+				})
 			} else if a == nil {
 				newPos = pos + 1
 			}
-			// Non-mapping annotations (@Valid, @PreAuthorize, etc.) are skipped
-			// but do NOT clear pending — they may appear between @GetMapping and
-			// the actual method signature.
 			pos = newPos
 
-		// ── semicolon clears pending (field declaration) ────────────────
+		// ── semicolon: interface/abstract method or field declaration ──
 		case ch == ';' && braceDepth == 1:
+			if len(pending) > 0 {
+				// Could be an interface method or abstract method declaration.
+				// Extract the method name from text between last annotation and ';'.
+				lastAnnotEnd := pending[len(pending)-1].annot.endPos
+				sig := src[lastAnnotEnd:pos]
+				name := findMethodName(sig)
+				if name != "" {
+					firstAnnotLine := pending[0].lineNum
+					m := buildMethodDefs(pending, name, firstAnnotLine, reg)
+					methods = append(methods, m...)
+				}
+			}
 			pending = nil
 			pos++
 
-		// ── newline: count for line number tracking ────────────────────
+		// ── newline: line tracking ─────────────────────────────────────
 		case ch == '\n':
 			lineNum++
 			pos++
@@ -223,29 +271,41 @@ func skipBody(src string, pos int, depth int) int {
 	return pos
 }
 
-// buildMethodDefs creates one MethodDef per HTTP method × path combination.
-func buildMethodDefs(pending []pendingAnnot, methodName string, lineNum int) []MethodDef {
+// buildMethodDefs creates MethodDef entries, expanding one entry per
+// HTTP method × path combination (handles @RequestMapping with multiple methods).
+func buildMethodDefs(pending []pendingAnnot, methodName string, lineNum int, reg ConstantRegistry) []MethodDef {
 	var defs []MethodDef
 	for _, pa := range pending {
 		a := pa.annot
-		httpMethod, ok := httpMethodForAnnotation[a.name]
-		if !ok {
-			httpMethod = extractHTTPMethod(a.content)
+
+		// HTTP methods
+		var httpMethods []string
+		if fixed, ok := httpMethodForAnnotation[a.name]; ok {
+			httpMethods = []string{fixed}
+		} else {
+			// @RequestMapping — extract method= attribute, default GET
+			httpMethods = extractHTTPMethods(a.content)
 		}
-		paths := extractPaths(a.content)
-		defs = append(defs, MethodDef{
-			MethodName: methodName,
-			HTTPMethod: httpMethod,
-			Paths:      paths,
-			LineNumber: lineNum,
-		})
+
+		// Paths (with constant resolution and UNRESOLVED marker)
+		paths, unresolved, ref := resolvePathsOrMark(a.content, reg)
+
+		for _, httpMethod := range httpMethods {
+			defs = append(defs, MethodDef{
+				MethodName:    methodName,
+				HTTPMethod:    httpMethod,
+				Paths:         paths,
+				LineNumber:    lineNum,
+				Unresolved:    unresolved,
+				UnresolvedRef: ref,
+			})
+		}
 	}
 	return defs
 }
 
 // findMethodName finds the method name from the text between an annotation and
-// the opening '{' of the method body. It looks for the last non-keyword
-// identifier immediately before a '(' in the signature text.
+// the opening '{' or ';'. Looks for the last non-keyword identifier before '('.
 func findMethodName(sig string) string {
 	matches := methodNameRe.FindAllStringSubmatchIndex(sig, -1)
 	for i := len(matches) - 1; i >= 0; i-- {
@@ -270,8 +330,7 @@ const (
 	csBlockComment              // inside /* ... */
 )
 
-// stripComments removes Java // and /* */ comments while preserving newlines
-// for accurate line number tracking.
+// stripComments removes Java // and /* */ comments while preserving newlines.
 func stripComments(src string) string {
 	var buf strings.Builder
 	buf.Grow(len(src))
@@ -327,7 +386,7 @@ func stripComments(src string) string {
 				continue
 			}
 			if ch == '\n' {
-				buf.WriteByte('\n') // preserve newlines for line counting
+				buf.WriteByte('\n')
 			}
 		}
 		i++
@@ -335,7 +394,7 @@ func stripComments(src string) string {
 	return buf.String()
 }
 
-// countLines returns the number of newlines in s (= 1-based line of the last char).
+// countLines returns the number of newlines in s.
 func countLines(s string) int {
 	return strings.Count(s, "\n")
 }
@@ -358,5 +417,5 @@ var javaKeywords = map[string]bool{
 	// common return types that appear before method name
 	"String": true, "Object": true, "List": true, "Map": true,
 	"Optional": true, "Mono": true, "Flux": true,
-	"Future": true, "CompletableFuture": true,
+	"Future": true, "CompletableFuture": true, "ResponseEntity": true,
 }
