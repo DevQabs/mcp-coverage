@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"mcp-coverage/internal/coverage"
 	"mcp-coverage/internal/mapping"
@@ -44,43 +45,80 @@ func New(
 // Run starts the HTTP server (blocking).
 func (s *Server) Run() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/coverage", s.handleCoverage)
+	mux.HandleFunc("/coverage", s.handleSummary)
 	mux.HandleFunc("/coverage/results", s.handleResults)
+	mux.HandleFunc("/coverage/unmapped", s.handleUnmapped)
 	mux.HandleFunc("/coverage/modules", s.handleModules)
 	mux.HandleFunc("/coverage/controllers", s.handleControllers)
 	mux.HandleFunc("/coverage/report", s.handleFullReport)
 
 	fmt.Printf("Admin API listening on :%s\n", s.port)
-	fmt.Println("  GET /coverage              — summary metrics")
-	fmt.Println("  GET /coverage/results       — all mapping results (filter=UNMAPPED|REVIEW_REQUIRED|MAPPED|MODULE:x|CONTROLLER:x)")
-	fmt.Println("  GET /coverage/modules       — per-module metrics")
-	fmt.Println("  GET /coverage/controllers   — per-controller metrics")
-	fmt.Println("  GET /coverage/report        — full JSON report")
+	fmt.Println("  GET /coverage                              — summary metrics")
+	fmt.Println("  GET /coverage/results[?status=mapped|review_required|unmapped]")
+	fmt.Println("                                              — mapping results with optional status filter")
+	fmt.Println("  GET /coverage/unmapped                     — unmapped APIs only (shortcut)")
+	fmt.Println("  GET /coverage/modules                      — per-module metrics")
+	fmt.Println("  GET /coverage/controllers                  — per-controller metrics")
+	fmt.Println("  GET /coverage/report                       — full JSON report")
 	return http.ListenAndServe(":"+s.port, mux)
 }
 
 // ── handlers ───────────────────────────────────────────────────────────────
 
-func (s *Server) handleCoverage(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.metrics)
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.fullReport.Summary)
 }
 
 func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
-	filter := r.URL.Query().Get("filter")
-	results := report.Filter(s.results, filter)
+	// Support ?status= (new) and ?filter= (legacy) query params.
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = r.URL.Query().Get("filter")
+	}
+
+	var results []mapping.MappingResult
+	switch strings.ToLower(status) {
+	case "unmapped":
+		results = filterByStatus(s.results, mapping.StatusUnmapped)
+	case "review_required", "review-required":
+		results = filterByStatus(s.results, mapping.StatusReviewRequired)
+	case "mapped":
+		results = filterByStatus(s.results, mapping.StatusMapped)
+	default:
+		results = s.results
+	}
 	writeJSON(w, results)
 }
 
+func (s *Server) handleUnmapped(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.fullReport.UnmappedAPIs)
+}
+
 func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.byModule)
+	writeJSON(w, s.fullReport.ModuleCoverage)
 }
 
 func (s *Server) handleControllers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.byCtrl)
+	writeJSON(w, s.fullReport.ControllerCoverage)
 }
 
 func (s *Server) handleFullReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.fullReport)
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+func filterByStatus(results []mapping.MappingResult, status string) []mapping.MappingResult {
+	var out []mapping.MappingResult
+	for _, r := range results {
+		if r.MappingStatus == status {
+			out = append(out, r)
+		}
+	}
+	if out == nil {
+		out = []mapping.MappingResult{}
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

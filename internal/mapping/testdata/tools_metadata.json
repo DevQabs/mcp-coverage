@@ -1,0 +1,14 @@
+{
+  "create_patient": {
+    "apiPath": "/hoo010100p01/insertPatient",
+    "httpMethod": "POST",
+    "controllerName": "PatientController",
+    "methodName": "insertPatient"
+  },
+  "search_patient": {
+    "apis": [
+      { "apiPath": "/hoo010100p01/selectPatient", "httpMethod": "GET" },
+      { "apiPath": "/reception/selectCompletePatientList", "httpMethod": "GET" }
+    ]
+  }
+}

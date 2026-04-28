@@ -13,16 +13,38 @@ import (
 	"mcp-coverage/internal/mcpclient"
 )
 
+// Summary is the top-level coverage metrics block in the JSON report.
+type Summary struct {
+	TotalAPICount      int     `json:"totalApiCount"`
+	MappedAPICount     int     `json:"mappedApiCount"`
+	ReviewRequiredCount int    `json:"reviewRequiredCount"`
+	UnmappedAPICount   int     `json:"unmappedApiCount"`
+	CoverageRate       float64 `json:"coverageRate"`
+}
+
+// UnmappedAPI is a simplified view of an unmapped result for quick triage.
+type UnmappedAPI struct {
+	HTTPMethod     string  `json:"httpMethod"`
+	APIPath        string  `json:"apiPath"`
+	Module         string  `json:"module"`
+	ControllerName string  `json:"controllerName"`
+	MethodName     string  `json:"methodName"`
+	MCPToolName    *string `json:"mcpToolName"` // always null for unmapped
+	Status         string  `json:"status"`
+	Reason         string  `json:"reason"`
+}
+
 // CoverageReport is the full JSON report structure.
 type CoverageReport struct {
-	GeneratedAt      time.Time                             `json:"generatedAt"`
-	TargetMCP        string                                `json:"targetMcp"`
-	ScannerUsed      string                                `json:"scannerUsed"`
-	Metrics          coverage.Metrics                      `json:"metrics"`
-	ModuleCoverage   []*coverage.ModuleMetrics             `json:"moduleCoverage"`
-	ControllerCoverage []*coverage.ControllerMetrics       `json:"controllerCoverage"`
-	Results          []mapping.MappingResult               `json:"results"`
-	MCPTools         []mcpclient.ToolEntry                 `json:"mcpTools"`
+	GeneratedAt         time.Time                          `json:"generatedAt"`
+	TargetMCP           string                             `json:"targetMcp"`
+	ScannerUsed         string                             `json:"scannerUsed"`
+	Summary             Summary                            `json:"summary"`
+	UnmappedAPIs        []UnmappedAPI                      `json:"unmappedApis"`
+	ModuleCoverage      []*coverage.ModuleMetrics          `json:"moduleCoverage"`
+	ControllerCoverage  []*coverage.ControllerMetrics      `json:"controllerCoverage"`
+	Results             []mapping.MappingResult            `json:"results"`
+	MCPTools            []mcpclient.ToolEntry              `json:"mcpTools"`
 }
 
 // BuildReport assembles the full report.
@@ -34,11 +56,22 @@ func BuildReport(
 	byModule map[string]*coverage.ModuleMetrics,
 	byController map[string]*coverage.ControllerMetrics,
 ) *CoverageReport {
+	summary := Summary{
+		TotalAPICount:       metrics.Total,
+		MappedAPICount:      metrics.Mapped,
+		ReviewRequiredCount: metrics.ReviewRequired,
+		UnmappedAPICount:    metrics.Unmapped,
+		CoverageRate:        metrics.CoverageRate,
+	}
+
+	unmapped := buildUnmappedList(results)
+
 	return &CoverageReport{
 		GeneratedAt:        time.Now().UTC(),
 		TargetMCP:          targetMCP,
 		ScannerUsed:        scanner,
-		Metrics:            metrics,
+		Summary:            summary,
+		UnmappedAPIs:       unmapped,
 		ModuleCoverage:     sortedModules(byModule),
 		ControllerCoverage: sortedControllers(byController),
 		Results:            results,
@@ -60,6 +93,32 @@ func WriteJSON(report *CoverageReport, outputDir string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+func buildUnmappedList(results []mapping.MappingResult) []UnmappedAPI {
+	var list []UnmappedAPI
+	for _, r := range results {
+		if r.MappingStatus != mapping.StatusUnmapped {
+			continue
+		}
+		var toolName *string // nil = JSON null
+		list = append(list, UnmappedAPI{
+			HTTPMethod:     r.HTTPMethod,
+			APIPath:        r.APIPath,
+			Module:         r.Module,
+			ControllerName: r.Controller,
+			MethodName:     r.MethodName,
+			MCPToolName:    toolName,
+			Status:         mapping.StatusUnmapped,
+			Reason:         "No matching MCP Tool found",
+		})
+	}
+	if list == nil {
+		list = []UnmappedAPI{} // ensure JSON array, not null
+	}
+	return list
 }
 
 func sortedModules(m map[string]*coverage.ModuleMetrics) []*coverage.ModuleMetrics {
