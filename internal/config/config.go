@@ -5,17 +5,33 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
-	TargetMCPName string // TARGET_MCP_NAME
-	SwaggerURL    string // SWAGGER_URL (optional; triggers OpenAPI scanner if set)
-	ReportFormat  string // TABLE | JSON | BOTH (default: BOTH)
-	Filter        string // ALL | UNMAPPED | REVIEW_REQUIRED (default: ALL)
-	AdminHTTP     bool   // ADMIN_HTTP=true enables HTTP admin API
-	AdminPort     string // ADMIN_PORT (default: 8080)
-	MetadataDir   string // METADATA_DIR (default: ./metadata)
-	OutputDir     string // OUTPUT_DIR (default: ./reports)
+	// Target MCP server (required)
+	TargetMCPName string
+
+	// API source — priority: JavaSource > OpenAPI > Static
+	TargetProjectPath string // TARGET_PROJECT_PATH — scan Spring source directly
+	SwaggerURL        string // SWAGGER_URL — fetch live OpenAPI spec
+
+	// Exclusions (JavaSource scanner only)
+	ExcludeAPIPatterns        []string // EXCLUDE_API_PATTERNS comma-separated glob patterns
+	ExcludeControllerPatterns []string // EXCLUDE_CONTROLLER_PATTERNS comma-separated glob patterns
+
+	// Output
+	ReportFormat string // TABLE | JSON | BOTH
+	Filter       string // ALL | MAPPED | UNMAPPED | REVIEW_REQUIRED | MODULE:<n> | CONTROLLER:<n>
+	OutputDir    string // directory for coverage_report.json
+	MetadataDir  string // directory for apis.json and tools_metadata.json
+
+	// Admin HTTP API
+	AdminHTTP bool
+	AdminPort string
+
+	// Diagnostics
+	Debug bool // DEBUG=true prints detailed scanner stats
 }
 
 func Load() (*Config, error) {
@@ -25,45 +41,53 @@ func Load() (*Config, error) {
 	}
 
 	adminHTTP, _ := strconv.ParseBool(os.Getenv("ADMIN_HTTP"))
+	debug, _ := strconv.ParseBool(os.Getenv("DEBUG"))
 
-	metaDir := os.Getenv("METADATA_DIR")
-	if metaDir == "" {
-		metaDir = defaultMetadataDir()
-	}
-
-	outDir := os.Getenv("OUTPUT_DIR")
-	if outDir == "" {
-		outDir = "./reports"
-	}
-
-	reportFmt := os.Getenv("REPORT_FORMAT")
-	if reportFmt == "" {
-		reportFmt = "BOTH"
-	}
-
-	filter := os.Getenv("FILTER")
-	if filter == "" {
-		filter = "ALL"
-	}
-
-	adminPort := os.Getenv("ADMIN_PORT")
-	if adminPort == "" {
-		adminPort = "8080"
-	}
+	reportFmt := envOr("REPORT_FORMAT", "BOTH")
+	filter := envOr("FILTER", "ALL")
+	adminPort := envOr("ADMIN_PORT", "8080")
+	outputDir := envOr("OUTPUT_DIR", "./reports")
+	metaDir := envOr("METADATA_DIR", defaultMetadataDir())
 
 	return &Config{
-		TargetMCPName: name,
-		SwaggerURL:    os.Getenv("SWAGGER_URL"),
-		ReportFormat:  reportFmt,
-		Filter:        filter,
-		AdminHTTP:     adminHTTP,
-		AdminPort:     adminPort,
-		MetadataDir:   metaDir,
-		OutputDir:     outDir,
+		TargetMCPName:             name,
+		TargetProjectPath:         os.Getenv("TARGET_PROJECT_PATH"),
+		SwaggerURL:                os.Getenv("SWAGGER_URL"),
+		ExcludeAPIPatterns:        splitPatterns(os.Getenv("EXCLUDE_API_PATTERNS")),
+		ExcludeControllerPatterns: splitPatterns(os.Getenv("EXCLUDE_CONTROLLER_PATTERNS")),
+		ReportFormat:              reportFmt,
+		Filter:                    filter,
+		OutputDir:                 outputDir,
+		MetadataDir:               metaDir,
+		AdminHTTP:                 adminHTTP,
+		AdminPort:                 adminPort,
+		Debug:                     debug,
 	}, nil
 }
 
-// defaultMetadataDir resolves metadata/ relative to the binary or cwd.
+// ── helpers ────────────────────────────────────────────────────────────────
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func splitPatterns(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func defaultMetadataDir() string {
 	exe, err := os.Executable()
 	if err == nil {

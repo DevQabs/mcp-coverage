@@ -8,6 +8,7 @@ import (
 
 	"mcp-coverage/api"
 	"mcp-coverage/internal/apiscanner"
+	"mcp-coverage/internal/apiscanner/javasource"
 	"mcp-coverage/internal/config"
 	"mcp-coverage/internal/coverage"
 	"mcp-coverage/internal/mapping"
@@ -17,7 +18,7 @@ import (
 )
 
 func main() {
-	verbose := flag.Bool("v", false, "verbose: show server stderr during tool listing")
+	verbose := flag.Bool("v", false, "verbose: show MCP server stderr during tool listing")
 	listServers := flag.Bool("list-servers", false, "list all discovered MCP servers and exit")
 	flag.Parse()
 
@@ -29,16 +30,19 @@ func main() {
 	cfg, err := config.Load()
 	die(err)
 
-	if *verbose {
-		fmt.Fprintf(os.Stderr, "[mcp-coverage] target MCP: %s\n", cfg.TargetMCPName)
-		fmt.Fprintf(os.Stderr, "[mcp-coverage] metadata dir: %s\n", cfg.MetadataDir)
+	if *verbose || cfg.Debug {
+		fmt.Fprintf(os.Stderr, "[mcp-coverage] target MCP        : %s\n", cfg.TargetMCPName)
+		if cfg.TargetProjectPath != "" {
+			fmt.Fprintf(os.Stderr, "[mcp-coverage] target project     : %s\n", cfg.TargetProjectPath)
+		}
+		fmt.Fprintf(os.Stderr, "[mcp-coverage] metadata dir       : %s\n", cfg.MetadataDir)
 	}
 
 	// ── Step 1: resolve MCP server config ──────────────────────────────────
 	serverCfg, foundIn, err := mcpconfig.Resolve(cfg.TargetMCPName)
 	die(err)
-	if *verbose {
-		fmt.Fprintf(os.Stderr, "[mcp-coverage] resolved %q from %s\n", cfg.TargetMCPName, foundIn)
+	if *verbose || cfg.Debug {
+		fmt.Fprintf(os.Stderr, "[mcp-coverage] MCP config found   : %s\n", foundIn)
 	}
 
 	// ── Step 2: collect MCP tools ───────────────────────────────────────────
@@ -49,7 +53,7 @@ func main() {
 	fmt.Fprintf(os.Stderr, "  Found %d MCP tools\n", len(tools))
 
 	// ── Step 3: collect backend APIs ───────────────────────────────────────
-	scanner := apiscanner.NewScanner(cfg.SwaggerURL, cfg.MetadataDir)
+	scanner := newScanner(cfg)
 	fmt.Fprintf(os.Stderr, "Scanning APIs via %s scanner...\n", scanner.Name())
 	apis, err := scanner.Scan()
 	die(err)
@@ -89,6 +93,25 @@ func main() {
 		srv := api.New(cfg.AdminPort, results, metrics, byModule, byController, fullReport)
 		die(srv.Run())
 	}
+}
+
+// newScanner selects the appropriate API scanner based on config priority:
+//  1. JavaSource — when TARGET_PROJECT_PATH is set
+//  2. OpenAPI    — when SWAGGER_URL is set
+//  3. Static     — fallback (metadata/apis.json)
+func newScanner(cfg *config.Config) apiscanner.Scanner {
+	if cfg.TargetProjectPath != "" {
+		return javasource.New(javasource.Config{
+			ProjectPath:               cfg.TargetProjectPath,
+			ExcludeAPIPatterns:        cfg.ExcludeAPIPatterns,
+			ExcludeControllerPatterns: cfg.ExcludeControllerPatterns,
+			Debug:                     cfg.Debug,
+		})
+	}
+	if cfg.SwaggerURL != "" {
+		return apiscanner.NewOpenAPIScanner(cfg.SwaggerURL)
+	}
+	return apiscanner.NewStaticScanner(cfg.MetadataDir)
 }
 
 func die(err error) {

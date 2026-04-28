@@ -1,17 +1,17 @@
 # mcp-coverage
 
-MCP API Coverage Tracker — Spring Controller API가 MCP Tool로 얼마나 커버되는지 측정하는 Go 도구.
+MCP API Coverage Tracker — a Go tool that measures how well your Spring Controller APIs are covered by MCP Tools.
 
-## 개요
+## Overview
 
-Spring 백엔드에 새 API가 추가될 때 MCP Tool이 없으면 AI 에이전트가 해당 API에 접근할 수 없다. 이 도구는 전체 Spring API 목록과 MCP Tool 목록을 비교해 커버리지를 측정하고, 미매핑 API를 즉시 식별한다.
+When a new API is added to a Spring backend without a corresponding MCP Tool, AI agents cannot access it. This tool compares the full list of Spring APIs against MCP Tools to measure coverage and immediately identify unmapped APIs.
 
-- **API 수집**: Swagger/OpenAPI 또는 정적 레지스트리(`metadata/apis.json`)
-- **MCP Tool 수집**: 대상 MCP 서버에 직접 연결해 `tools/list` 호출
-- **3단계 매핑**: 명시적 메타데이터 → 경로 매칭 → 이름 유사도
-- **리포트**: 터미널 컬러 테이블 + JSON 파일
+- **API discovery**: Java source scanner (`TARGET_PROJECT_PATH`), Swagger/OpenAPI, or static registry (`metadata/apis.json`)
+- **MCP Tool discovery**: connects directly to the target MCP server and calls `tools/list`
+- **3-tier mapping**: explicit metadata → path matching → name similarity
+- **Reports**: color terminal table + JSON file
 
-## 설치
+## Installation
 
 ```bash
 git clone https://github.com/DevQabs/mcp-coverage
@@ -19,55 +19,62 @@ cd mcp-coverage
 go build -o bin/mcp-coverage ./cmd/
 ```
 
-**요구사항:** Go 1.25+
+**Requirements:** Go 1.25+
 
-## 실행
+## Usage
 
-`TARGET_MCP_NAME` 하나만 필수. 연결 정보(command, env 등)는 Claude 설정 파일에서 자동 조회.
+Only `TARGET_MCP_NAME` is required. Connection details (command, env, etc.) are automatically resolved from your Claude config files.
 
 ```bash
 TARGET_MCP_NAME=emr-mcp ./bin/mcp-coverage
 ```
 
-### 주요 옵션
+### Common options
 
 ```bash
-# 미매핑 API만 보기
+# Scan Spring source code directly (discovers all APIs including those not in Swagger)
+TARGET_MCP_NAME=emr-mcp TARGET_PROJECT_PATH=/path/to/spring-project ./bin/mcp-coverage
+
+# Show only unmapped APIs
 TARGET_MCP_NAME=emr-mcp FILTER=UNMAPPED ./bin/mcp-coverage
 
-# 검토 필요 항목만
+# Show only review-required items
 TARGET_MCP_NAME=emr-mcp FILTER=REVIEW_REQUIRED ./bin/mcp-coverage
 
-# 특정 모듈만
+# Filter by module
 TARGET_MCP_NAME=emr-mcp FILTER=MODULE:reception ./bin/mcp-coverage
 
-# Swagger로 실시간 Spring API 수집
+# Scan via Swagger/OpenAPI
 TARGET_MCP_NAME=emr-mcp SWAGGER_URL=http://localhost:8080 ./bin/mcp-coverage
 
-# JSON 리포트만 생성 (CI용)
+# JSON report only (CI use)
 TARGET_MCP_NAME=emr-mcp REPORT_FORMAT=JSON OUTPUT_DIR=./reports ./bin/mcp-coverage
 
-# HTTP 관리 API 활성화
+# Enable HTTP admin API
 TARGET_MCP_NAME=emr-mcp ADMIN_HTTP=true ADMIN_PORT=8080 ./bin/mcp-coverage
 
-# 사용 가능한 MCP 서버 목록 확인
+# List all discovered MCP servers
 ./bin/mcp-coverage -list-servers
 ```
 
-### 환경변수
+### Environment variables
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `TARGET_MCP_NAME` | **필수** | 분석할 MCP 서버 이름 |
-| `SWAGGER_URL` | — | Spring 서버 베이스 URL (OpenAPI 스캔) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TARGET_MCP_NAME` | **required** | Name of the MCP server to analyze |
+| `TARGET_PROJECT_PATH` | — | Root path of the Spring project to scan (Java source scanner) |
+| `EXCLUDE_API_PATTERNS` | — | Comma-separated glob patterns to exclude API paths (e.g. `/actuator/**,/error`) |
+| `EXCLUDE_CONTROLLER_PATTERNS` | — | Comma-separated glob patterns to exclude controllers (e.g. `*HealthCheckController`) |
+| `SWAGGER_URL` | — | Spring server base URL for OpenAPI scanning |
 | `REPORT_FORMAT` | `BOTH` | `TABLE` / `JSON` / `BOTH` |
 | `FILTER` | `ALL` | `UNMAPPED` / `REVIEW_REQUIRED` / `MAPPED` / `MODULE:<name>` / `CONTROLLER:<name>` |
-| `ADMIN_HTTP` | `false` | HTTP 관리 API 활성화 |
-| `ADMIN_PORT` | `8080` | 관리 API 포트 |
-| `METADATA_DIR` | `./metadata` | `apis.json`, `tools_metadata.json` 경로 |
-| `OUTPUT_DIR` | `./reports` | JSON 리포트 출력 경로 |
+| `ADMIN_HTTP` | `false` | Enable HTTP admin API |
+| `ADMIN_PORT` | `8080` | Admin API port |
+| `METADATA_DIR` | `./metadata` | Path to `apis.json` and `tools_metadata.json` |
+| `OUTPUT_DIR` | `./reports` | JSON report output path |
+| `DEBUG` | `false` | Print detailed scan stats to stderr |
 
-## 출력 예시
+## Example output
 
 ```
 ═══ MCP Coverage Report — emr-mcp
@@ -85,7 +92,7 @@ TARGET_MCP_NAME=emr-mcp ADMIN_HTTP=true ADMIN_PORT=8080 ./bin/mcp-coverage
   oneai          100.0%  (2/2 mapped, 0 review, 0 unmapped)
 ```
 
-### JSON 리포트 구조
+### JSON report structure
 
 ```json
 {
@@ -116,24 +123,24 @@ TARGET_MCP_NAME=emr-mcp ADMIN_HTTP=true ADMIN_PORT=8080 ./bin/mcp-coverage
 }
 ```
 
-## HTTP 관리 API
+## HTTP admin API
 
-`ADMIN_HTTP=true` 설정 시:
+When `ADMIN_HTTP=true`:
 
-| 엔드포인트 | 설명 |
-|-----------|------|
-| `GET /coverage` | 전체 커버리지 지표 |
-| `GET /coverage/results?status=unmapped` | 상태별 필터 (`mapped` / `review_required` / `unmapped`) |
-| `GET /coverage/unmapped` | 미매핑 API 목록 |
-| `GET /coverage/modules` | 모듈별 커버리지 |
-| `GET /coverage/controllers` | 컨트롤러별 커버리지 |
-| `GET /coverage/report` | 전체 JSON 리포트 |
+| Endpoint | Description |
+|----------|-------------|
+| `GET /coverage` | Overall coverage metrics |
+| `GET /coverage/results?status=unmapped` | Filter by status (`mapped` / `review_required` / `unmapped`) |
+| `GET /coverage/unmapped` | Unmapped API list |
+| `GET /coverage/modules` | Coverage by module |
+| `GET /coverage/controllers` | Coverage by controller |
+| `GET /coverage/report` | Full JSON report |
 
-## 메타데이터 관리
+## Metadata management
 
-### 새 API 추가
+### Adding a new API
 
-`metadata/apis.json`에 추가 → 자동으로 `unmapped` 표시:
+Add to `metadata/apis.json` → automatically shown as `unmapped`:
 
 ```json
 {
@@ -142,13 +149,13 @@ TARGET_MCP_NAME=emr-mcp ADMIN_HTTP=true ADMIN_PORT=8080 ./bin/mcp-coverage
   "httpMethod": "POST",
   "apiPath": "/lab/insertLabOrder",
   "methodName": "insertLabOrder",
-  "summary": "검사 오더 등록"
+  "summary": "Create lab order"
 }
 ```
 
-### MCP Tool 매핑 추가
+### Adding an MCP Tool mapping
 
-`metadata/tools_metadata.json`에 추가 (기존 코드 변경 없음):
+Add to `metadata/tools_metadata.json` (no code changes needed):
 
 ```json
 "create_lab_order": {
@@ -159,38 +166,31 @@ TARGET_MCP_NAME=emr-mcp ADMIN_HTTP=true ADMIN_PORT=8080 ./bin/mcp-coverage
 }
 ```
 
-여러 API를 호출하는 Tool:
+Tools that call multiple APIs:
 
 ```json
 "complete_payment": {
   "apis": [
-    { "apiPath": "/reception/selectOverallCalculationInfo", "httpMethod": "GET", "note": "계산 조회" },
-    { "apiPath": "/reception/insertPayData", "httpMethod": "POST", "note": "수납 처리" }
+    { "apiPath": "/reception/selectOverallCalculationInfo", "httpMethod": "GET" },
+    { "apiPath": "/reception/insertPayData", "httpMethod": "POST" }
   ]
 }
 ```
 
-## 매핑 우선순위
+## Mapping priority
 
-| 우선순위 | 방식 | 결과 상태 |
-|----------|------|----------|
-| 1 | `tools_metadata.json` 명시적 매핑 | `mapped` |
-| 2 | `apiPath` + `httpMethod` 경로 매칭 | `mapped` |
-| 3 | 컨트롤러/메서드명 유사도 ≥ 0.5 | `mapped` |
-| 3 | 컨트롤러/메서드명 유사도 ≥ 0.25 | `review_required` |
-| — | 매칭 없음 | `unmapped` |
+| Priority | Method | Result status |
+|----------|--------|---------------|
+| 1 | Explicit `tools_metadata.json` mapping | `mapped` |
+| 2 | `apiPath` + `httpMethod` path match | `mapped` |
+| 3 | Controller/method name similarity ≥ 0.5 | `mapped` |
+| 3 | Controller/method name similarity ≥ 0.25 | `review_required` |
+| — | No match | `unmapped` |
 
-명시적 메타데이터가 항상 최우선. 유사도 매칭은 보조 수단이며 `review_required` 항목은 수동 확인 필요.
+Explicit metadata always takes highest priority. Similarity matching is a fallback; `review_required` items need manual verification.
 
-## 테스트
+## Testing
 
 ```bash
 go test ./...
 ```
-
-## 규칙
-
-- 기존 API 비즈니스 로직 변경 금지
-- MCP Tool 메타데이터 확장만 허용
-- `tools_metadata.json` 명시적 매핑이 최우선
-- 새 API는 MCP Tool 없으면 자동으로 `unmapped`

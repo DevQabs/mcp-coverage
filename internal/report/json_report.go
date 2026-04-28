@@ -29,6 +29,8 @@ type UnmappedAPI struct {
 	Module         string  `json:"module"`
 	ControllerName string  `json:"controllerName"`
 	MethodName     string  `json:"methodName"`
+	SourceFile     string  `json:"sourceFile,omitempty"`
+	LineNumber     int     `json:"lineNumber,omitempty"`
 	MCPToolName    *string `json:"mcpToolName"` // always null for unmapped
 	Status         string  `json:"status"`
 	Reason         string  `json:"reason"`
@@ -110,6 +112,8 @@ func buildUnmappedList(results []mapping.MappingResult) []UnmappedAPI {
 			Module:         r.Module,
 			ControllerName: r.Controller,
 			MethodName:     r.MethodName,
+			SourceFile:     r.SourceFile,
+			LineNumber:     r.LineNumber,
 			MCPToolName:    toolName,
 			Status:         mapping.StatusUnmapped,
 			Reason:         "No matching MCP Tool found",

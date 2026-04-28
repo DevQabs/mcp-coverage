@@ -8,7 +8,7 @@ import (
 )
 
 // StaticScanner loads API entries from a JSON file (metadata/apis.json).
-// Used as the fallback when no Swagger URL is configured.
+// Used as the fallback when no project path or Swagger URL is configured.
 type StaticScanner struct {
 	FilePath string
 }
@@ -31,12 +31,4 @@ func (s *StaticScanner) Scan() ([]APIEntry, error) {
 		return nil, fmt.Errorf("static scanner: invalid JSON in %s: %w", s.FilePath, err)
 	}
 	return entries, nil
-}
-
-// NewScanner returns OpenAPI scanner if swaggerURL is set, else static.
-func NewScanner(swaggerURL, metadataDir string) Scanner {
-	if swaggerURL != "" {
-		return NewOpenAPIScanner(swaggerURL)
-	}
-	return NewStaticScanner(metadataDir)
 }

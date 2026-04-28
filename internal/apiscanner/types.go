@@ -7,7 +7,9 @@ type APIEntry struct {
 	HTTPMethod string `json:"httpMethod"`
 	APIPath    string `json:"apiPath"`
 	MethodName string `json:"methodName"`
-	Summary    string `json:"summary"`
+	Summary    string `json:"summary,omitempty"`
+	SourceFile string `json:"sourceFile,omitempty"` // relative path (JavaSource scanner only)
+	LineNumber int    `json:"lineNumber,omitempty"` // 1-based (JavaSource scanner only)
 }
 
 // Scanner is the interface for collecting backend API entries.
