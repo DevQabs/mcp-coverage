@@ -1,0 +1,142 @@
+{
+  "create_patient": {
+    "apiPath": "/hoo010100p01/insertPatient",
+    "httpMethod": "POST",
+    "controllerName": "PatientController",
+    "methodName": "insertPatient"
+  },
+  "search_patient": {
+    "apis": [
+      {
+        "apiPath": "/hoo010100p01/selectPatient",
+        "httpMethod": "GET",
+        "controllerName": "PatientController",
+        "methodName": "selectPatient",
+        "note": "pid로 직접 조회"
+      },
+      {
+        "apiPath": "/reception/selectCompletePatientList",
+        "httpMethod": "GET",
+        "controllerName": "ReceptionController",
+        "methodName": "selectCompletePatientList",
+        "note": "이름/키워드로 검색"
+      }
+    ]
+  },
+  "create_reception": {
+    "apiPath": "/reception/insertReception",
+    "httpMethod": "POST",
+    "controllerName": "ReceptionController",
+    "methodName": "insertReception"
+  },
+  "update_reception_status": {
+    "apiPath": "/diagnose/reception/updateReceptionStatus",
+    "httpMethod": "POST",
+    "controllerName": "DiagnoseController",
+    "methodName": "updateReceptionStatus"
+  },
+  "search_doctor": {
+    "apis": [
+      {
+        "apiPath": "/oneai/doctors",
+        "httpMethod": "GET",
+        "controllerName": "OneAIController",
+        "methodName": "getDoctors",
+        "note": "이름으로 검색"
+      },
+      {
+        "apiPath": "/MMD/ReservationV2/getMdcrDeptAndDoctor",
+        "httpMethod": "POST",
+        "controllerName": "ReservationController",
+        "methodName": "getMdcrDeptAndDoctor",
+        "note": "직원번호로 조회 (내부)"
+      },
+      {
+        "apiPath": "/reception/selectReceptionList",
+        "httpMethod": "GET",
+        "controllerName": "ReceptionController",
+        "methodName": "selectReceptionList",
+        "note": "의사 hstr_sqno 조회용 (내부)"
+      },
+      {
+        "apiPath": "/reception/selectReceptionInfo",
+        "httpMethod": "GET",
+        "controllerName": "ReceptionController",
+        "methodName": "selectReceptionInfo",
+        "note": "rcpn_no로 의사 정보 보완 (내부)"
+      }
+    ]
+  },
+  "search_department": {
+    "apiPath": "/oneai/departments",
+    "httpMethod": "GET",
+    "controllerName": "OneAIController",
+    "methodName": "getDepartments"
+  },
+  "search_common_code": {
+    "apiPath": "/service/CommonCode/CommonCodeSelect",
+    "httpMethod": "POST",
+    "controllerName": "CommonCodeController",
+    "methodName": "commonCodeSelect"
+  },
+  "common_code_update": {
+    "apiPath": "/service/CommonCode/CommonCodeSelect",
+    "httpMethod": "POST",
+    "controllerName": "CommonCodeController",
+    "methodName": "commonCodeSelect",
+    "note": "공통코드 갱신 — 동일 API 호출 후 로컬 파일 저장"
+  },
+  "search_prsc": {
+    "apiPath": "/ElasticSearch/searchByIndex",
+    "httpMethod": "POST",
+    "controllerName": "ElasticSearchController",
+    "methodName": "searchByIndex"
+  },
+  "search_disease": {
+    "apiPath": "/ElasticSearch/searchByIndex",
+    "httpMethod": "POST",
+    "controllerName": "ElasticSearchController",
+    "methodName": "searchByIndex"
+  },
+  "create_invoice": {
+    "apiPath": "/invoice",
+    "httpMethod": "POST",
+    "controllerName": "InvoiceController",
+    "methodName": "createInvoice"
+  },
+  "complete_clinic": {
+    "apiPath": "/MED_010000/completeClinic",
+    "httpMethod": "POST",
+    "controllerName": "MED010000Controller",
+    "methodName": "completeClinic"
+  },
+  "complete_payment": {
+    "apis": [
+      {
+        "apiPath": "/reception/selectOverallCalculationInfo",
+        "httpMethod": "GET",
+        "controllerName": "ReceptionController",
+        "methodName": "selectOverallCalculationInfo",
+        "note": "수납 전 계산 금액 조회"
+      },
+      {
+        "apiPath": "/reception/insertPayData",
+        "httpMethod": "POST",
+        "controllerName": "ReceptionController",
+        "methodName": "insertPayData",
+        "note": "수납 처리"
+      }
+    ]
+  },
+  "recommend_prescription_by_disease": {
+    "apis": [
+      {
+        "apiPath": "/ElasticSearch/searchByIndex",
+        "httpMethod": "POST",
+        "controllerName": "ElasticSearchController",
+        "methodName": "searchByIndex",
+        "note": "Kibana 이력 처방 검색"
+      }
+    ]
+  }
+}
