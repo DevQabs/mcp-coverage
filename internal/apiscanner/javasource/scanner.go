@@ -69,10 +69,15 @@ func (s *JavaSourceScanner) Scan() ([]apiscanner.APIEntry, error) {
 	stats := &DebugStats{SkipReasons: make(map[string]int)}
 	seen := make(map[string]int) // "METHOD /path" → count
 
-	// Phase 1: build constant registry across the whole project.
+	// Phase 1: build constant registry and meta-annotation registry.
 	reg := BuildConstantRegistry(s.cfg.ProjectPath)
+	metaReg := BuildMetaAnnotationRegistry(s.cfg.ProjectPath)
 	if s.cfg.Debug {
-		fmt.Fprintf(os.Stderr, "[javasource] constant registry: %d entries\n", len(reg))
+		fmt.Fprintf(os.Stderr, "[javasource] constant registry  : %d entries\n", len(reg))
+		fmt.Fprintf(os.Stderr, "[javasource] meta-annotation reg: %d custom controller annotations\n", len(metaReg))
+		for name := range metaReg {
+			fmt.Fprintf(os.Stderr, "[javasource]   @%s\n", name)
+		}
 	}
 
 	var entries []apiscanner.APIEntry
@@ -86,6 +91,11 @@ func (s *JavaSourceScanner) Scan() ([]apiscanner.APIEntry, error) {
 			name := d.Name()
 			if strings.HasPrefix(name, ".") || name == "build" || name == "target" ||
 				name == "node_modules" || name == "out" || name == ".gradle" {
+				return filepath.SkipDir
+			}
+			// Skip test source directories — they contain test files that are not
+			// actual Spring controllers and would produce false positives / noise.
+			if name == "test" && strings.Contains(filepath.ToSlash(path), "/src/test") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -104,7 +114,7 @@ func (s *JavaSourceScanner) Scan() ([]apiscanner.APIEntry, error) {
 			return nil
 		}
 
-		ctrl := ParseFileWithRegistry(path, string(src), reg)
+		ctrl := ParseFileWithRegistry(path, string(src), reg, metaReg)
 		if ctrl == nil {
 			return nil
 		}

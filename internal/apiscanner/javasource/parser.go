@@ -47,16 +47,16 @@ var (
 // ParseFile parses a single Java source file. Returns nil if not a controller.
 // Backward-compatible wrapper — uses no constant registry.
 func ParseFile(path, src string) *ControllerDef {
-	return ParseFileWithRegistry(path, src, nil)
+	return ParseFileWithRegistry(path, src, nil, nil)
 }
 
 // ParseFileWithRegistry parses a Java source file using reg to resolve path constants.
 // reg may be nil (disables constant resolution; unresolvable paths are still included
 // with an UNRESOLVED: prefix rather than being silently dropped).
-func ParseFileWithRegistry(path, src string, reg ConstantRegistry) *ControllerDef {
+func ParseFileWithRegistry(path, src string, reg ConstantRegistry, metaReg MetaAnnotationRegistry) *ControllerDef {
 	clean := stripComments(src)
 
-	if !isController(clean) {
+	if !isController(clean, metaReg) {
 		return nil
 	}
 
@@ -65,7 +65,7 @@ func ParseFileWithRegistry(path, src string, reg ConstantRegistry) *ControllerDe
 		return nil
 	}
 
-	basePaths, baseUnresolved, baseRef := extractBasePaths(clean[:classPos], reg)
+	basePaths, baseUnresolved, baseRef := extractBasePaths(clean[:classPos], reg, metaReg)
 
 	bodyStart := strings.Index(clean[classPos:], "{")
 	if bodyStart < 0 {
@@ -89,12 +89,18 @@ func ParseFileWithRegistry(path, src string, reg ConstantRegistry) *ControllerDe
 
 // ── controller detection ───────────────────────────────────────────────────
 
-func isController(src string) bool {
+func isController(src string, metaReg MetaAnnotationRegistry) bool {
 	if adviceAnnotRe.MatchString(src) {
 		return false
 	}
 	if controllerAnnotRe.MatchString(src) {
 		return true
+	}
+	// Check custom meta-annotations (e.g. @HealthRestController).
+	for annotName := range metaReg {
+		if containsAnnotation(src, annotName) {
+			return true
+		}
 	}
 	// Interfaces (and abstract types) that carry Spring MVC mapping annotations
 	// are treated as controller blueprints — they define real API routes even
@@ -103,6 +109,23 @@ func isController(src string) bool {
 		return true
 	}
 	return false
+}
+
+// containsAnnotation reports whether src contains @annotName as an annotation reference.
+func containsAnnotation(src, annotName string) bool {
+	idx := strings.Index(src, "@"+annotName)
+	if idx < 0 {
+		return false
+	}
+	// Verify the character after the name is not a word character (prevents partial matches).
+	end := idx + 1 + len(annotName)
+	if end < len(src) {
+		ch := src[end]
+		if isWordChar(ch) {
+			return false
+		}
+	}
+	return true
 }
 
 // ── class/interface declaration ────────────────────────────────────────────
@@ -124,10 +147,10 @@ func findClassDeclaration(src string) (name string, pos int, isInterface bool, i
 
 // ── class-level @RequestMapping ────────────────────────────────────────────
 
-func extractBasePaths(preClass string, reg ConstantRegistry) ([]string, bool, string) {
-	// Scan all annotations in preClass and use the last @RequestMapping found.
-	// This handles both simple (@RequestMapping) and fully qualified
-	// (@org.springframework.web.bind.annotation.RequestMapping) forms.
+func extractBasePaths(preClass string, reg ConstantRegistry, metaReg MetaAnnotationRegistry) ([]string, bool, string) {
+	// Scan all annotations in preClass: match @RequestMapping and any custom
+	// controller meta-annotations (e.g. @HealthRestController) which provide
+	// the base path via their value() attribute.
 	var last *annotRaw
 	pos := 0
 	for pos < len(preClass) {
@@ -137,8 +160,10 @@ func extractBasePaths(preClass string, reg ConstantRegistry) ([]string, bool, st
 		}
 		abs := pos + idx
 		a, newPos := parseAnnotation(preClass, abs)
-		if a != nil && a.name == "RequestMapping" {
-			last = a
+		if a != nil {
+			if a.name == "RequestMapping" || metaReg[a.name] {
+				last = a
+			}
 		}
 		if newPos > abs {
 			pos = newPos
@@ -305,15 +330,23 @@ func buildMethodDefs(pending []pendingAnnot, methodName string, lineNum int, reg
 }
 
 // findMethodName finds the method name from the text between an annotation and
-// the opening '{' or ';'. Looks for the last non-keyword identifier before '('.
+// the opening '{' or ';'. Looks for the last non-keyword identifier before '('
+// that is NOT itself an annotation name (i.e. not preceded by '@').
 func findMethodName(sig string) string {
 	matches := methodNameRe.FindAllStringSubmatchIndex(sig, -1)
 	for i := len(matches) - 1; i >= 0; i-- {
 		m := matches[i]
 		word := sig[m[2]:m[3]]
-		if !javaKeywords[word] {
-			return word
+		if javaKeywords[word] {
+			continue
 		}
+		// Skip annotation names: the character immediately before the identifier
+		// (ignoring whitespace) must not be '@'.
+		pre := strings.TrimRight(sig[:m[0]], " \t\n\r")
+		if len(pre) > 0 && pre[len(pre)-1] == '@' {
+			continue
+		}
+		return word
 	}
 	return ""
 }

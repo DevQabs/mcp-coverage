@@ -12,10 +12,17 @@ import (
 // Keys: "ClassName.FIELD" (qualified) and "FIELD" (unqualified fallback).
 type ConstantRegistry map[string]string
 
+// MetaAnnotationRegistry is the set of custom annotation simple-names (e.g. "HealthRestController")
+// that act as meta-annotations composing @RestController (or @Controller).
+// Controllers annotated with any name in this set are treated as Spring controllers,
+// and their annotation value() is treated as the base @RequestMapping path.
+type MetaAnnotationRegistry map[string]bool
+
 var (
-	constFieldRe = regexp.MustCompile(`\bfinal\s+String\s+(\w+)\s*=\s*"([^"]*)"`)
-	constClassRe = regexp.MustCompile(`(?:class|interface|enum)\s+(\w+)`)
-	identRefRe   = regexp.MustCompile(`^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)`)
+	constFieldRe     = regexp.MustCompile(`\bfinal\s+String\s+(\w+)\s*=\s*"([^"]*)"`)
+	constClassRe     = regexp.MustCompile(`(?:class|interface|enum)\s+(\w+)`)
+	identRefRe       = regexp.MustCompile(`^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)`)
+	metaInterfaceRe  = regexp.MustCompile(`(?:public\s+)?@interface\s+(\w+)`)
 )
 
 // BuildConstantRegistry walks projectPath and collects all `final String FIELD = "..."` declarations.
@@ -51,6 +58,74 @@ func BuildConstantRegistry(projectPath string) ConstantRegistry {
 			if className != "" {
 				reg[className+"."+field] = val
 			}
+		}
+		return nil
+	})
+	return reg
+}
+
+// BuildMetaAnnotationRegistry walks projectPath and discovers custom annotation types
+// (i.e. @interface declarations) that are themselves meta-annotated with @RestController
+// or @Controller. These custom annotations can then be used to detect controller classes
+// and extract their base request-mapping paths.
+//
+// Example: given
+//
+//	@RestController
+//	@RequestMapping(...)
+//	public @interface HealthRestController { String[] value() default {}; }
+//
+// The registry will contain {"HealthRestController": true}.
+func BuildMetaAnnotationRegistry(projectPath string) MetaAnnotationRegistry {
+	reg := make(MetaAnnotationRegistry)
+	_ = filepath.WalkDir(projectPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "build" ||
+				name == "target" || name == "node_modules" || name == "out" ||
+				name == ".gradle" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".java") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		src := stripComments(string(data))
+
+		// Fast pre-check: must contain both "@interface" and a controller annotation keyword.
+		if !strings.Contains(src, "@interface") {
+			return nil
+		}
+		if !strings.Contains(src, "RestController") && !strings.Contains(src, "@Controller") {
+			return nil
+		}
+
+		// Find the @interface declaration position.
+		ifaceIdx := metaInterfaceRe.FindStringIndex(src)
+		if ifaceIdx == nil {
+			return nil
+		}
+		m := metaInterfaceRe.FindStringSubmatch(src[ifaceIdx[0]:])
+		if len(m) < 2 {
+			return nil
+		}
+		annotName := m[1]
+
+		// The annotations above the @interface declaration appear in the text before it.
+		preInterface := src[:ifaceIdx[0]]
+
+		// If @RestController or @Controller appears before the @interface, it's a meta-annotation.
+		if controllerAnnotRe.MatchString(preInterface) {
+			reg[annotName] = true
 		}
 		return nil
 	})

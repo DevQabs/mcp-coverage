@@ -665,7 +665,7 @@ public class PatientController {
 		"PatientPaths.PATIENT_LIST": "/api/patients",
 		"PATIENT_LIST":              "/api/patients",
 	}
-	ctrl := javasource.ParseFileWithRegistry("PatientController.java", src, reg)
+	ctrl := javasource.ParseFileWithRegistry("PatientController.java", src, reg, nil)
 	assertNotNil(t, ctrl)
 	if len(ctrl.Methods) != 1 {
 		t.Fatalf("expected 1 method, got %d", len(ctrl.Methods))
