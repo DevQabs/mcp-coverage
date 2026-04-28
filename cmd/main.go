@@ -95,22 +95,17 @@ func main() {
 	}
 }
 
-// newScanner selects the appropriate API scanner based on config priority:
+// newScanner selects the appropriate API scanner based on config:
 //  1. JavaSource — when TARGET_PROJECT_PATH is set
-//  2. OpenAPI    — when SWAGGER_URL is set
-//  3. Static     — fallback (metadata/apis.json)
+//  2. Static     — fallback (metadata/apis.json)
 func newScanner(cfg *config.Config) apiscanner.Scanner {
 	if cfg.TargetProjectPath != "" {
 		return javasource.New(javasource.Config{
 			ProjectPath:               cfg.TargetProjectPath,
 			ExcludeAPIPatterns:        cfg.ExcludeAPIPatterns,
 			ExcludeControllerPatterns: cfg.ExcludeControllerPatterns,
-			ActuatorURL:               cfg.ActuatorURL,
 			Debug:                     cfg.Debug,
 		})
-	}
-	if cfg.SwaggerURL != "" {
-		return apiscanner.NewOpenAPIScanner(cfg.SwaggerURL)
 	}
 	return apiscanner.NewStaticScanner(cfg.MetadataDir)
 }

@@ -12,10 +12,8 @@ type Config struct {
 	// Target MCP server (required)
 	TargetMCPName string
 
-	// API source — priority: JavaSource > OpenAPI > Static
+	// API source
 	TargetProjectPath string // TARGET_PROJECT_PATH — scan Spring source directly
-	SwaggerURL        string // SWAGGER_URL — fetch live OpenAPI spec
-	ActuatorURL       string // ACTUATOR_URL — optional running app for /actuator/mappings merge
 
 	// Exclusions (JavaSource scanner only)
 	ExcludeAPIPatterns        []string // EXCLUDE_API_PATTERNS comma-separated glob patterns
@@ -53,8 +51,6 @@ func Load() (*Config, error) {
 	return &Config{
 		TargetMCPName:             name,
 		TargetProjectPath:         os.Getenv("TARGET_PROJECT_PATH"),
-		SwaggerURL:                os.Getenv("SWAGGER_URL"),
-		ActuatorURL:               os.Getenv("ACTUATOR_URL"),
 		ExcludeAPIPatterns:        splitPatterns(os.Getenv("EXCLUDE_API_PATTERNS")),
 		ExcludeControllerPatterns: splitPatterns(os.Getenv("EXCLUDE_CONTROLLER_PATTERNS")),
 		ReportFormat:              reportFmt,

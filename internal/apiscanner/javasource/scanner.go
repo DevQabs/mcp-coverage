@@ -6,7 +6,6 @@
 //
 // Discovery strategy (highest priority first):
 //  1. Java source annotation scanning (primary)
-//  2. Spring Actuator /actuator/mappings endpoint (optional, merged)
 package javasource
 
 import (
@@ -24,7 +23,6 @@ type Config struct {
 	ProjectPath               string   // root of the Spring project to scan
 	ExcludeAPIPatterns        []string // glob patterns for API paths to exclude
 	ExcludeControllerPatterns []string // glob patterns for controller class names to exclude
-	ActuatorURL               string   // optional: base URL of running Spring app for /actuator/mappings
 	Debug                     bool     // print debug stats to stderr
 }
 
@@ -39,7 +37,6 @@ type DebugStats struct {
 	DetectedAPIs        int
 	ExcludedAPIs        int
 	UnresolvedPaths     int
-	ActuatorOnlyAPIs    int
 	DuplicatePaths      []string
 	SkipReasons         map[string]int // reason → count
 }
@@ -64,7 +61,6 @@ func (s *JavaSourceScanner) Name() string { return "JavaSource" }
 // Discovery order:
 //  1. Build a constant registry (resolves path constants like ApiPaths.PATIENT)
 //  2. Parse all Java source files for Spring controller annotations
-//  3. Merge /actuator/mappings results if ActuatorURL is configured
 func (s *JavaSourceScanner) Scan() ([]apiscanner.APIEntry, error) {
 	stats := &DebugStats{SkipReasons: make(map[string]int)}
 	seen := make(map[string]int) // "METHOD /path" → count
@@ -185,44 +181,11 @@ func (s *JavaSourceScanner) Scan() ([]apiscanner.APIEntry, error) {
 		}
 		return nil
 	})
-
-	// Phase 3: optional actuator merge.
-	if s.cfg.ActuatorURL != "" {
-		actuatorEntries, actuatorErr := ScanActuator(s.cfg.ActuatorURL)
-		if actuatorErr != nil {
-			if s.cfg.Debug {
-				fmt.Fprintf(os.Stderr, "[javasource] actuator scan failed: %v\n", actuatorErr)
-			}
-		} else {
-			before := len(entries)
-			entries = mergeWithActuator(entries, actuatorEntries, seen)
-			stats.ActuatorOnlyAPIs = len(entries) - before
-			if s.cfg.Debug {
-				fmt.Fprintf(os.Stderr, "[javasource] actuator: %d new APIs added\n", stats.ActuatorOnlyAPIs)
-			}
-		}
-	}
-
 	if s.cfg.Debug {
 		printDebug(s.cfg.ProjectPath, stats)
 	}
 
 	return entries, err
-}
-
-// mergeWithActuator adds actuator-discovered entries that were not found by source scan.
-func mergeWithActuator(primary []apiscanner.APIEntry, actuator []apiscanner.APIEntry, seen map[string]int) []apiscanner.APIEntry {
-	merged := append([]apiscanner.APIEntry(nil), primary...)
-	for _, e := range actuator {
-		key := e.HTTPMethod + " " + e.APIPath
-		if seen[key] == 0 {
-			e.ScanStatus = "actuator-only"
-			e.ScanReason = "discovered via /actuator/mappings, not found in source scan"
-			merged = append(merged, e)
-			seen[key]++
-		}
-	}
-	return merged
 }
 
 // ── path combination ───────────────────────────────────────────────────────
@@ -321,7 +284,6 @@ func printDebug(projectPath string, s *DebugStats) {
 	fmt.Fprintf(os.Stderr, "  APIs detected         : %d\n", s.DetectedAPIs)
 	fmt.Fprintf(os.Stderr, "  APIs excluded         : %d\n", s.ExcludedAPIs)
 	fmt.Fprintf(os.Stderr, "  Unresolved paths      : %d\n", s.UnresolvedPaths)
-	fmt.Fprintf(os.Stderr, "  Actuator-only APIs    : %d\n", s.ActuatorOnlyAPIs)
 	if len(s.DuplicatePaths) > 0 {
 		fmt.Fprintf(os.Stderr, "  Duplicate paths       : %d\n", len(s.DuplicatePaths))
 		for _, dup := range s.DuplicatePaths {
