@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"mcp-coverage/api"
-	"mcp-coverage/internal/apiscanner"
 	"mcp-coverage/internal/apiscanner/javasource"
 	"mcp-coverage/internal/config"
 	"mcp-coverage/internal/coverage"
@@ -32,9 +31,7 @@ func main() {
 
 	if *verbose || cfg.Debug {
 		fmt.Fprintf(os.Stderr, "[mcp-coverage] target MCP        : %s\n", cfg.TargetMCPName)
-		if cfg.TargetProjectPath != "" {
-			fmt.Fprintf(os.Stderr, "[mcp-coverage] target project     : %s\n", cfg.TargetProjectPath)
-		}
+		fmt.Fprintf(os.Stderr, "[mcp-coverage] target project     : %s\n", cfg.TargetProjectPath)
 		fmt.Fprintf(os.Stderr, "[mcp-coverage] metadata dir       : %s\n", cfg.MetadataDir)
 	}
 
@@ -52,9 +49,14 @@ func main() {
 	die(err)
 	fmt.Fprintf(os.Stderr, "  Found %d MCP tools\n", len(tools))
 
-	// ── Step 3: collect backend APIs ───────────────────────────────────────
-	scanner := newScanner(cfg)
-	fmt.Fprintf(os.Stderr, "Scanning APIs via %s scanner...\n", scanner.Name())
+	// ── Step 3: scan backend APIs from Java source ──────────────────────────
+	scanner := javasource.New(javasource.Config{
+		ProjectPath:               cfg.TargetProjectPath,
+		ExcludeAPIPatterns:        cfg.ExcludeAPIPatterns,
+		ExcludeControllerPatterns: cfg.ExcludeControllerPatterns,
+		Debug:                     cfg.Debug,
+	})
+	fmt.Fprintf(os.Stderr, "Scanning APIs from project: %s\n", cfg.TargetProjectPath)
 	apis, err := scanner.Scan()
 	die(err)
 	fmt.Fprintf(os.Stderr, "  Found %d backend APIs\n", len(apis))
@@ -93,21 +95,6 @@ func main() {
 		srv := api.New(cfg.AdminPort, results, metrics, byModule, byController, fullReport)
 		die(srv.Run())
 	}
-}
-
-// newScanner selects the appropriate API scanner based on config:
-//  1. JavaSource — when TARGET_PROJECT_PATH is set
-//  2. Static     — fallback (metadata/apis.json)
-func newScanner(cfg *config.Config) apiscanner.Scanner {
-	if cfg.TargetProjectPath != "" {
-		return javasource.New(javasource.Config{
-			ProjectPath:               cfg.TargetProjectPath,
-			ExcludeAPIPatterns:        cfg.ExcludeAPIPatterns,
-			ExcludeControllerPatterns: cfg.ExcludeControllerPatterns,
-			Debug:                     cfg.Debug,
-		})
-	}
-	return apiscanner.NewStaticScanner(cfg.MetadataDir)
 }
 
 func die(err error) {

@@ -9,34 +9,28 @@ import (
 )
 
 type Config struct {
-	// Target MCP server (required)
-	TargetMCPName string
-
-	// API source
-	TargetProjectPath string // TARGET_PROJECT_PATH — scan Spring source directly
-
-	// Exclusions (JavaSource scanner only)
-	ExcludeAPIPatterns        []string // EXCLUDE_API_PATTERNS comma-separated glob patterns
-	ExcludeControllerPatterns []string // EXCLUDE_CONTROLLER_PATTERNS comma-separated glob patterns
-
-	// Output
-	ReportFormat string // TABLE | JSON | BOTH
-	Filter       string // ALL | MAPPED | UNMAPPED | REVIEW_REQUIRED | MODULE:<n> | CONTROLLER:<n>
-	OutputDir    string // directory for coverage_report.json
-	MetadataDir  string // directory for apis.json and tools_metadata.json
-
-	// Admin HTTP API
+	TargetMCPName     string
+	TargetProjectPath string
+	ExcludeAPIPatterns        []string
+	ExcludeControllerPatterns []string
+	ReportFormat string
+	Filter       string
+	OutputDir    string
+	MetadataDir  string
 	AdminHTTP bool
 	AdminPort string
-
-	// Diagnostics
-	Debug bool // DEBUG=true prints detailed scanner stats
+	Debug bool
 }
 
 func Load() (*Config, error) {
 	name := os.Getenv("TARGET_MCP_NAME")
 	if name == "" {
 		return nil, fmt.Errorf("TARGET_MCP_NAME environment variable is required")
+	}
+
+	projectPath := os.Getenv("TARGET_PROJECT_PATH")
+	if projectPath == "" {
+		return nil, fmt.Errorf("TARGET_PROJECT_PATH environment variable is required")
 	}
 
 	adminHTTP, _ := strconv.ParseBool(os.Getenv("ADMIN_HTTP"))
@@ -50,7 +44,7 @@ func Load() (*Config, error) {
 
 	return &Config{
 		TargetMCPName:             name,
-		TargetProjectPath:         os.Getenv("TARGET_PROJECT_PATH"),
+		TargetProjectPath:         projectPath,
 		ExcludeAPIPatterns:        splitPatterns(os.Getenv("EXCLUDE_API_PATTERNS")),
 		ExcludeControllerPatterns: splitPatterns(os.Getenv("EXCLUDE_CONTROLLER_PATTERNS")),
 		ReportFormat:              reportFmt,
@@ -62,8 +56,6 @@ func Load() (*Config, error) {
 		Debug:                     debug,
 	}, nil
 }
-
-// ── helpers ────────────────────────────────────────────────────────────────
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
