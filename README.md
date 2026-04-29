@@ -1,10 +1,17 @@
 # mcp-coverage
 
-MCP API Coverage Tracker — Spring Controller API가 MCP Tool로 얼마나 커버되고 있는지 측정합니다.
+Spring Controller API가 MCP Tool로 얼마나 커버되고 있는지 측정하는 **CLI 분석 도구**입니다.
 
-## Overview
+> **mcp-coverage는 MCP 서버가 아닙니다.**
+> Claude에 MCP 서버로 등록하는 것이 아니라, 이미 Claude에 등록된 MCP 서버를 분석하는 CLI 도구입니다.
+> 터미널에서 직접 실행하거나, Claude Code의 Bash 도구를 통해 활용합니다.
 
-Spring 백엔드에 새 API가 추가되었는데 대응하는 MCP Tool이 없으면 AI 에이전트가 해당 기능에 접근할 수 없습니다. 이 도구는 Spring 프로젝트 소스코드를 직접 파싱하여 전체 API 목록�� 수집하고, MCP Tool과 비교해 커버리지를 측정하며 미매핑 API를 식별합니다.
+---
+
+## 배경
+
+Spring 백엔드에 새 API가 추가되었는데 대응하는 MCP Tool이 없으면 AI 에이전트가 해당 기능에 접근할 수 없습니다.
+mcp-coverage는 Spring 프로젝트 소스코드를 직접 파싱하여 전체 API 목록을 수집하고, 등록된 MCP Tool과 비교해 커버리지를 측정하며 미매핑 API를 식별합니다.
 
 - **API 탐색**: Java 소스 직접 파싱 (Swagger / Actuator 불필요)
 - **MCP Tool 탐색**: stdio JSON-RPC `tools/list` (Claude 설정 파일 자동 참조)
@@ -27,8 +34,6 @@ go build -o bin/mcp-coverage ./cmd/
 
 ## 동작 원리
 
-mcp-coverage는 실행 시 아래 순서로 동작합니다.
-
 ```
 1. Claude 설정 파일에서 TARGET_MCP_NAME 서버 설정 자동 탐색
         ↓
@@ -41,7 +46,7 @@ mcp-coverage는 실행 시 아래 순서로 동작합니다.
 5. 커버리지 계산 + 리포트 출력 (터미널 테이블 / JSON)
 ```
 
-### 탐색하는 Claude 설정 파일 위치
+### Claude 설정 파일 탐색 위치
 
 mcp-coverage는 아래 파일들을 **자동으로 탐색**하여 등록된 MCP 서버 정보를 읽어옵니다.
 
@@ -53,45 +58,37 @@ mcp-coverage는 아래 파일들을 **자동으로 탐색**하여 등록된 MCP 
 | 3 | `~/.claude.json` (projects 섹션) |
 | 4 | `./.claude/settings.json` |
 
-**따라서 분석하려는 MCP 서버는 위 파일 중 하나에 미리 등록되어 있어야 합니다.**
+**분석하려는 MCP 서버는 위 파일 중 하나에 미리 등록되어 있어야 합니다.**
 
 ---
 
-## 분석 대상 MCP 서버 등록
+## 분석 대상 MCP 서버 등록 방법
 
-mcp-coverage를 실행하기 전에 분석할 MCP 서버를 Claude에 등록해야 합니다.
+mcp-coverage를 실행하기 전에, 분석할 MCP 서버를 Claude에 먼저 등록해야 합니다.
 
-### `claude mcp add` 명령어로 등록 (권장)
+### `claude mcp add` 명령어 (권장)
 
 ```bash
 # 기본 형태
 claude mcp add <서버명> -- <실행파일 경로>
 
-# 환경변수 함께 지정
-claude mcp add <서버명> -e KEY=VALUE -- <실행파일 경로>
+# 환경변수 포함
+claude mcp add <서버명> -e KEY=VALUE -e KEY2=VALUE2 -- <실행파일 경로>
 
-# 전역(user) 스코프로 등록 — 모든 프로젝트에서 사용 가능
+# 전역 등록 (모든 프로젝트에서 사용 가능)
 claude mcp add <서버명> --scope user -- <실행파일 경로>
-```
 
-예시:
-
-```bash
-# emr-mcp 서버 등록
-claude mcp add emr-mcp \
-  --scope user \
-  -e EMR_ENV=local \
-  -e EMR_CONFIG=/Users/user/.emr-mcp/config.json \
-  -- /path/to/emr-mcp
+# 특정 프로젝트에만 등록
+claude mcp add <서버명> --scope project -- <실행파일 경로>
 ```
 
 등록 확인:
 
 ```bash
-# Claude CLI로 확인
+# Claude CLI로 등록된 MCP 서버 목록 확인
 claude mcp list
 
-# mcp-coverage로 탐색된 서버 목록 확인
+# mcp-coverage가 탐색한 서버 목록 확인
 ./bin/mcp-coverage --list-servers
 ```
 
@@ -102,11 +99,11 @@ claude mcp list
 ```json
 {
   "mcpServers": {
-    "emr-mcp": {
-      "command": "/path/to/emr-mcp",
+    "my-mcp-server": {
+      "command": "/path/to/my-mcp-server",
+      "args": ["--some-option"],
       "env": {
-        "EMR_ENV": "local",
-        "EMR_CONFIG": "/Users/user/.emr-mcp/config.json"
+        "ENV_KEY": "value"
       }
     }
   }
@@ -120,7 +117,7 @@ claude mcp list
 `TARGET_MCP_NAME`과 `TARGET_PROJECT_PATH` 두 변수가 모두 **필수**입니다.
 
 ```bash
-TARGET_MCP_NAME=emr-mcp \
+TARGET_MCP_NAME=<서버명> \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   ./bin/mcp-coverage
 ```
@@ -143,33 +140,39 @@ TARGET_MCP_NAME=emr-mcp \
 
 ---
 
-## Claude Code에서 mcp-coverage 활용
+## Claude Code에서 활용하기
 
-mcp-coverage는 CLI 도구입니다. Claude Code에서 Bash 도구를 통해 직접 실행하거나, `ADMIN_HTTP=true`로 HTTP 서버를 띄워 조회할 수 있습니다.
+mcp-coverage는 CLI 도구이므로 Claude Code에서는 **Bash 도구**를 통해 실행합니다.
+Claude Code에 자연어로 요청하면 Claude가 아래 명령들을 직접 실행하고 결과를 해석해 줍니다.
 
-### 예제 1: Claude Code에서 커버리지 측정 요청
+---
 
-Claude Code에 아래와 같이 요청하면 Claude가 Bash 도구로 mcp-coverage를 실행하고 결과를 해석해 줍니다.
+### 예제 1: 기본 커버리지 측정
+
+Claude Code에 요청:
 
 ```
-emr-mcp의 커버리지를 측정해줘.
+my-mcp-server의 커버리지를 측정해줘.
 Spring 프로젝트 경로는 /path/to/spring-project야.
 ```
 
 Claude Code가 내부적으로 실행하는 명령:
 
 ```bash
-TARGET_MCP_NAME=emr-mcp \
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
-  REPORT_FORMAT=JSON \
-  OUTPUT_DIR=./reports \
   ./bin/mcp-coverage
 ```
 
 출력 예시:
 
 ```
-═══ MCP Coverage Report — emr-mcp
+Connecting to MCP server "my-mcp-server"...
+  Found 17 MCP tools
+Scanning APIs from project: /path/to/spring-project
+  Found 2009 backend APIs
+
+═══ MCP Coverage Report — my-mcp-server
 
   Total APIs        : 2009
   Mapped            : 12
@@ -179,24 +182,26 @@ TARGET_MCP_NAME=emr-mcp \
 
 ── Coverage by Module
   reception        75.0%  (6/8 mapped)
-  oneai           100.0%  (2/2 mapped)
+  orders          100.0%  (2/2 mapped)
   lab               0.0%  (0/124 mapped)
   ...
 ```
 
 ---
 
-### 예제 2: 미매핑 API 추출 → MCP Tool 개발 우선순위 결정
+### 예제 2: 미매핑 API 목록 추출 → Tool 개발 우선순위 결정
+
+Claude Code에 요청:
 
 ```
-emr-mcp에서 아직 MCP Tool로 만들어지지 않은 API 목록을 뽑아줘.
+아직 MCP Tool이 없는 API 목록을 JSON으로 뽑아줘.
 우선순위 높은 것부터 정리해줘.
 ```
 
-Claude Code가 내부적으로 실행하는 명령:
+Claude Code가 내부적으로 실행:
 
 ```bash
-TARGET_MCP_NAME=emr-mcp \
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   FILTER=UNMAPPED \
   REPORT_FORMAT=JSON \
@@ -204,46 +209,37 @@ TARGET_MCP_NAME=emr-mcp \
   ./bin/mcp-coverage
 ```
 
-Claude Code는 생성된 JSON 리포트를 읽어 미매핑 API를 분석하고, 모듈 중요도 기준으로 우선순위를 정리해 줍니다.
+생성된 `reports/coverage_*.json`에서 `unmappedApis` 배열을 읽어 Claude가 분석하고 우선순위를 정리해줍니다.
 
 ---
 
-### 예제 3: Admin HTTP API로 Claude Code에서 실시간 조회
+### 예제 3: Admin HTTP API로 상시 조회
 
-커버리지 결과를 HTTP API로 상시 조회하려면 `ADMIN_HTTP=true`로 먼저 실행합니다.
+스캔 결과를 서버로 상시 올려두고 여러 번 조회할 때 유용합니다.
 
 ```bash
 # 백그라운드로 실행
-TARGET_MCP_NAME=emr-mcp \
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   ADMIN_HTTP=true \
   ADMIN_PORT=8080 \
   ./bin/mcp-coverage &
 ```
 
-Claude Code에서 조회 요청:
+Claude Code에 요청:
 
 ```
-mcp-coverage에서 미매핑 API 목록 가져와줘.
+미매핑 API 목록 가져와줘.
+모듈별 커버리지도 보여줘.
 ```
 
-Claude Code가 내부적으로 호출하는 API:
+Claude Code가 내부적으로 호출:
 
 ```bash
-# 전체 커버리지 지표
-curl http://localhost:8080/coverage
-
-# 미매핑 API 목록
-curl http://localhost:8080/coverage/unmapped
-
-# 모듈별 커버리지
-curl http://localhost:8080/coverage/modules
-
-# 상태별 필터링
+curl http://localhost:8080/coverage            # 전체 지표
+curl http://localhost:8080/coverage/unmapped   # 미매핑 API
+curl http://localhost:8080/coverage/modules    # 모듈별 커버리지
 curl "http://localhost:8080/coverage/results?status=review_required"
-
-# 전체 JSON 리포트 다운로드
-curl http://localhost:8080/coverage/report -o report.json
 ```
 
 Admin API 전체 엔드포인트:
@@ -259,9 +255,11 @@ Admin API 전체 엔드포인트:
 
 ---
 
-### 예제 4: Review Required 항목 확인 후 메타데이터 등록
+### 예제 4: Review Required 항목 수동 확인 후 메타데이터 등록
 
-자동 매핑이 불확실한 항목을 수동으로 확인해 `tools_metadata.json`에 등록하면 정확도가 높아집니다.
+자동 매핑이 불확실한 항목을 확인해 `tools_metadata.json`에 등록하면 정확도가 높아집니다.
+
+Claude Code에 요청:
 
 ```
 Review Required 상태인 API들 보여줘.
@@ -271,38 +269,41 @@ Review Required 상태인 API들 보여줘.
 Claude Code가 내부적으로 실행:
 
 ```bash
-TARGET_MCP_NAME=emr-mcp \
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   FILTER=REVIEW_REQUIRED \
   REPORT_FORMAT=JSON \
   ./bin/mcp-coverage
 ```
 
-확인 후 `metadata/tools_metadata.json`에 등록:
+확인 후 `metadata/tools_metadata.json`에 등록 (단일 API):
 
 ```json
 {
-  "complete_clinic": {
-    "apiPath": "/MED_010000/completeClinic",
-    "httpMethod": "POST",
-    "controllerName": "MED_010000Controller",
-    "methodName": "completeClinic"
-  },
-  "complete_payment": {
+  "tool_name_a": {
+    "apiPath": "/module/someAction",
+    "httpMethod": "POST"
+  }
+}
+```
+
+복수 API를 호출하는 Tool인 경우 `apis` 배열 형태로 등록:
+
+```json
+{
+  "tool_name_b": {
     "apis": [
-      { "apiPath": "/reception/selectOverallCalculationInfo", "httpMethod": "GET" },
-      { "apiPath": "/reception/insertPayData", "httpMethod": "POST" }
+      { "apiPath": "/module/step1", "httpMethod": "GET" },
+      { "apiPath": "/module/step2", "httpMethod": "POST" }
     ]
   }
 }
 ```
 
-복수 API를 호출하는 Tool은 `apis` 배열 형태로 등록합니다.
-
 재측정:
 
 ```bash
-TARGET_MCP_NAME=emr-mcp \
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   METADATA_DIR=./metadata \
   ./bin/mcp-coverage
@@ -310,37 +311,26 @@ TARGET_MCP_NAME=emr-mcp \
 
 ---
 
-### 예제 5: 특정 모듈/컨트롤러 집중 분석
-
-```
-reception 모듈의 커버리지만 확인해줘.
-```
+### 예제 5: 특정 모듈 / 컨트롤러 집중 분석
 
 ```bash
-TARGET_MCP_NAME=emr-mcp \
+# 특정 모듈만 분석
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   FILTER=MODULE:reception \
   ./bin/mcp-coverage
-```
 
-```
-MED_010000Controller만 분석해줘.
-```
-
-```bash
-TARGET_MCP_NAME=emr-mcp \
+# 특정 컨트롤러만 분석
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
-  FILTER=CONTROLLER:MED_010000Controller \
+  FILTER=CONTROLLER:PatientController \
   ./bin/mcp-coverage
-```
 
-시스템 경로 제외:
-
-```bash
-TARGET_MCP_NAME=emr-mcp \
+# 시스템 경로 및 특정 컨트롤러 제외
+TARGET_MCP_NAME=my-mcp-server \
   TARGET_PROJECT_PATH=/path/to/spring-project \
   EXCLUDE_API_PATTERNS="/actuator/**,/error,/health" \
-  EXCLUDE_CONTROLLER_PATTERNS="*HealthCheckController" \
+  EXCLUDE_CONTROLLER_PATTERNS="*HealthCheckController,*TestController" \
   ./bin/mcp-coverage
 ```
 
@@ -354,24 +344,26 @@ TARGET_MCP_NAME=emr-mcp \
 
 - `@RestController`, `@Controller` (패키지 경로 포함 fully-qualified 형태 포함)
 - **커스텀 메타 어노테이션** — `@RestController`를 메타로 사용하는 어노테이션 자동 감지
+
   ```java
   // 어노테이션 정의
   @RestController
   @RequestMapping(method = {RequestMethod.GET, RequestMethod.POST})
-  public @interface HealthRestController {
+  public @interface MyRestController {
       @AliasFor(annotation = RequestMapping.class, attribute = "path")
       String[] value() default {};
   }
 
   // 실제 사용 — 자동 탐지됨
-  @HealthRestController("/MED_010000")
-  public class MED_010000Controller { ... }
+  @MyRestController("/some/base/path")
+  public class SomeController { ... }
   ```
+
 - `@RequestMapping`, `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`
 - 클래스 레벨 + 메서드 레벨 경로 조합
 - 복수 경로: `@GetMapping({"/patients", "/members"})`
 - 복수 HTTP 메서드: `@RequestMapping(method = {RequestMethod.GET, RequestMethod.POST})`
-- `value` / `path` 속성: `@GetMapping(value = "/patients")`, `@GetMapping(path = "/patients")`
+- `value` / `path` 속성: `@GetMapping(value = "/patients")`
 - 인터페이스 컨트롤러 (Feign Client 스타일 API 계약)
 - 추상 기반 컨트롤러의 추상 메서드 매핑
 - 멀티 모듈 Gradle/Maven 프로젝트 (중첩된 `src/main/java` 루트 전체 탐색)
@@ -407,8 +399,6 @@ TARGET_MCP_NAME=emr-mcp \
   APIs excluded         : 47
   Unresolved paths      : 8
   Duplicate paths       : 2
-    POST /api/patients
-    GET  /api/common/code
 ────────────────────────────────────────────────
 ```
 
@@ -417,7 +407,7 @@ TARGET_MCP_NAME=emr-mcp \
 ## 출력 예시
 
 ```
-═══ MCP Coverage Report — emr-mcp
+═══ MCP Coverage Report — my-mcp-server
 
   Total APIs        : 2009
   Mapped            : 12
@@ -427,7 +417,7 @@ TARGET_MCP_NAME=emr-mcp \
 
 ── Coverage by Module
   reception        75.0%  (6/8 mapped, 1 review, 1 unmapped)
-  oneai           100.0%  (2/2 mapped, 0 review, 0 unmapped)
+  orders          100.0%  (2/2 mapped, 0 review, 0 unmapped)
   lab               0.0%  (0/124 mapped, 0 review, 124 unmapped)
   nursing           0.0%  (0/98 mapped, 0 review, 98 unmapped)
   ...
@@ -438,7 +428,7 @@ TARGET_MCP_NAME=emr-mcp \
 ```json
 {
   "generatedAt": "2026-04-29T10:00:00Z",
-  "targetMcp": "emr-mcp",
+  "targetMcp": "my-mcp-server",
   "summary": {
     "totalApiCount": 2009,
     "mappedApiCount": 12,
@@ -449,11 +439,11 @@ TARGET_MCP_NAME=emr-mcp \
   "unmappedApis": [
     {
       "httpMethod": "POST",
-      "apiPath": "/MED_010000/completeClinic",
-      "module": "MED_010000",
-      "controllerName": "MED_010000Controller",
-      "methodName": "completeClinic",
-      "sourceFile": "emr-service/src/main/java/com/example/MED_010000Controller.java",
+      "apiPath": "/some/module/someAction",
+      "module": "some-module",
+      "controllerName": "SomeController",
+      "methodName": "someAction",
+      "sourceFile": "module/src/main/java/com/example/SomeController.java",
       "lineNumber": 42,
       "mcpToolName": null,
       "status": "unmapped",
